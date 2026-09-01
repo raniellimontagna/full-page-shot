@@ -1,5 +1,7 @@
-import { describe, expect, it, vi } from 'vitest'
-import { measurePage, scrollToStep } from '../../src/content/scroll-driver'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { SETTLE_DELAY_MS, measurePage, scrollToStep } from '../../src/content/scroll-driver'
+
+const FRAME_DELAY_MS = 16
 
 describe('measurePage', () => {
   it('reads dimensions from the document and window', () => {
@@ -36,22 +38,65 @@ describe('scrollToStep', () => {
   })
 
   it('resolves only after the frames and the settle delay', async () => {
+    vi.useFakeTimers()
+
+    // Genuinely asynchronous fakes: each callback fires on a later macrotask
+    // (via the real timer queue, which vi.useFakeTimers() now controls)
+    // instead of being invoked inline. If `scrollToStep` ever dropped an
+    // `await`, the two `requestAnimationFrame` calls would be issued back
+    // to back instead of one-after-the-other, and the assertions below
+    // (which check `order` and `resolved` after each individual time
+    // advance) would observe frames landing together instead of staggered.
     const order: string[] = []
     const win = {
       scrollTo: () => order.push('scroll'),
       requestAnimationFrame: (cb: FrameRequestCallback) => {
-        order.push('frame')
-        cb(0)
-        return 0
+        return setTimeout(() => {
+          order.push('frame')
+          cb(0)
+        }, FRAME_DELAY_MS) as unknown as number
       },
-      setTimeout: (cb: () => void) => {
-        order.push('settle')
-        cb()
-        return 0
-      },
+      setTimeout: ((cb: () => void, ms?: number) => {
+        return setTimeout(() => {
+          order.push('settle')
+          cb()
+        }, ms) as unknown as number
+      }) as Window['setTimeout'],
     } as unknown as Window
 
-    await scrollToStep(win, 100)
+    let resolved = false
+    void scrollToStep(win, 100).then(() => {
+      resolved = true
+    })
+
+    // scrollTo runs synchronously before the first await; nothing else has
+    // had a chance to run yet.
+    expect(order).toEqual(['scroll'])
+    expect(resolved).toBe(false)
+
+    // First animation frame fires; the second must not have been requested
+    // and fired yet — that only happens once the first frame's promise is
+    // actually awaited.
+    await vi.advanceTimersByTimeAsync(FRAME_DELAY_MS)
+    expect(order).toEqual(['scroll', 'frame'])
+    expect(resolved).toBe(false)
+
+    // Second animation frame fires.
+    await vi.advanceTimersByTimeAsync(FRAME_DELAY_MS)
+    expect(order).toEqual(['scroll', 'frame', 'frame'])
+    expect(resolved).toBe(false)
+
+    // Work queued after scrollToStep must not have run before the settle
+    // delay fully elapses.
+    await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS - 1)
+    expect(resolved).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(1)
     expect(order).toEqual(['scroll', 'frame', 'frame', 'settle'])
+    expect(resolved).toBe(true)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
   })
 })

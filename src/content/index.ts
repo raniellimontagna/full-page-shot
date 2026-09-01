@@ -8,7 +8,16 @@ async function handle(request: ContentRequest): Promise<ContentResponse> {
   switch (request.type) {
     case 'measure': {
       const measurements = measurePage(window)
-      originalScrollY = measurements.scrollY
+      // Only remember the position from the FIRST measure of a capture.
+      // If the orchestrator ever re-sends `measure` mid-capture (e.g. a
+      // retry) while the page has already been scrolled, overwriting this
+      // would make `restore` land on the scrolled position instead of
+      // where the user actually started — a real page alteration the spec
+      // forbids. Each `measure` still returns fresh measurements; only the
+      // remembered original position is sticky, and only `restore` clears it.
+      if (originalScrollY === null) {
+        originalScrollY = measurements.scrollY
+      }
       return { ok: true, measurements }
     }
     case 'hideFixed':
