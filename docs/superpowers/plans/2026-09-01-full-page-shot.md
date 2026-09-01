@@ -356,7 +356,10 @@ export const CANVAS_LIMITS = {
 export function planCapture(m: PageMeasurements): CapturePlan {
   const dpr = m.devicePixelRatio
   const widthCss = m.viewportWidth
-  let heightCss = Math.max(m.scrollHeight, m.viewportHeight)
+  // Not max(scrollHeight, viewportHeight): a 600px page in an 800px viewport
+  // must yield a 600px canvas, not 800px with 200px of blank tail. Task 3's
+  // sourceHeight clamp trims the frame's overhang.
+  let heightCss = m.scrollHeight
   let truncated = false
 
   // Derive the height ceiling from the *rounded* canvas width, not the raw
