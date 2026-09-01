@@ -13,6 +13,7 @@ export default defineManifest({
   description: 'Capture the entire scrollable page in one click.',
   minimum_chrome_version: '116',
   permissions: ['activeTab', 'scripting', 'offscreen', 'downloads', 'clipboardWrite', 'storage'],
+  options_page: 'src/options/options.html',
   action: {
     default_title: 'Capture full page',
     default_icon: {
