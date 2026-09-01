@@ -85,6 +85,13 @@ export default defineManifest({
   description: 'Capture the entire scrollable page in one click.',
   minimum_chrome_version: '116',
   permissions: ['activeTab', 'scripting', 'offscreen', 'downloads', 'clipboardWrite', 'storage'],
+  // CRXJS only bundles files it can discover through manifest fields. The content
+  // script is injected on demand, never declared under `content_scripts`, so this
+  // is what makes CRXJS emit it at all — and it rewrites the entry to the real
+  // hashed output path, which the service worker reads back at runtime.
+  web_accessible_resources: [
+    { resources: ['src/content/index.ts'], matches: ['<all_urls>'] },
+  ],
   action: {
     default_title: 'Capture full page',
     default_icon: {
@@ -1435,7 +1442,7 @@ chrome.action.onClicked.addListener((tab) => {
     try {
       await chrome.scripting.executeScript({
         target: { tabId: tab.id },
-        files: ['src/content/index.ts.js'],
+        files: [contentScriptPath()],
       })
 
       await runCapture(tab.id, {
@@ -1464,7 +1471,29 @@ chrome.action.onClicked.addListener((tab) => {
 })
 ```
 
-The content script path in `executeScript` is whatever CRXJS emits into `dist/`. Verify the real filename with `ls dist/src/content` after building and correct the string if it differs.
+**Never hardcode the injected path.** CRXJS hashes output filenames, so a literal
+like `src/content/index.ts.js` is wrong today and would break again on the next
+build. Read the resolved path out of the manifest at runtime instead — add this
+helper to `src/background/index.ts`:
+
+```ts
+/**
+ * CRXJS rewrites web_accessible_resources to the real hashed output path, so the
+ * manifest is the only reliable source for what to inject.
+ */
+function contentScriptPath(): string {
+  for (const entry of chrome.runtime.getManifest().web_accessible_resources ?? []) {
+    if (typeof entry === 'object' && 'resources' in entry) {
+      const hit = entry.resources?.find((r) => r.includes('content'))
+      if (hit) return hit
+    }
+  }
+  throw new Error('content script missing from web_accessible_resources')
+}
+```
+
+Verify after building that `dist/manifest.json` really lists the emitted content
+script under `web_accessible_resources`, and that the file it names exists.
 
 - [ ] **Step 10: Build, reload, and capture a real page**
 
@@ -1896,7 +1925,7 @@ if (import.meta.env.MODE !== 'production') {
 
       await chrome.scripting.executeScript({
         target: { tabId: tab.id },
-        files: ['src/content/index.ts.js'],
+        files: [contentScriptPath()],
       })
 
       let measured: { width: number; height: number } = { width: 0, height: 0 }
