@@ -178,6 +178,32 @@ Não bloqueiam o desenvolvimento, mas entram no plano de implementação:
   coleta dado algum.
 - Screenshots promocionais.
 
+## Limitações conhecidas
+
+**Deriva das emendas em páginas longas com `devicePixelRatio` fracionário.** O canvas é
+pintado em frames inteiros: cada frame tem exatamente `round(viewportHeight × dpr)` pixels
+de device de altura, e os frames são posicionados numa grade uniforme, em `i × frameHeight`.
+Só que o conteúdo da página avança pelo valor exato `viewportHeight × dpr`. Quando o `dpr`
+é fracionário — 1.25, 1.5, 1.75, os fatores de escala padrão do Windows e do ChromeOS — a
+diferença sub-pixel entre os dois se acumula descendo a página, e as emendas interiores
+ficam levemente deslocadas da posição real do conteúdo.
+
+A magnitude é pequena e cresce com o número de passos: no varrimento de 478.408 combinações
+o pior caso é de 31 pixels de device (≈ 23 px CSS) na emenda 63 de uma página de ~48.000 px
+a `dpr` 1.33. Em páginas de tamanho comum a deriva fica em poucos pixels. O último frame é
+exceção: ele é ancorado no rodapé do canvas (`canvasHeight − frameHeight`), então o fim da
+página sempre bate exato — a deriva nunca corta conteúdo no final da imagem.
+
+A deriva é aceita porque a alternativa é pior. Sem a grade uniforme, arredondar cada posição
+de forma independente deixa **linhas de device inteiras sem cobertura** — buracos
+transparentes no meio da imagem, ou o rodapé da página cortado. Também não é um artefato da
+grade escolhida: uma variante que minimiza a deriva, mantendo a posição real sempre que isso
+não quebra a contiguidade, foi varrida em 24.472 combinações e produziu exatamente o mesmo
+máximo de 31 px. O resíduo é estrutural — eliminá-lo exigiria desenhar frames mais altos do
+que o bitmap realmente é. A escolha real é entre deriva e buracos, e buraco é pior. O limite
+está travado por teste de propriedade em `tests/core/stitch-plan.test.ts`, para que uma
+mudança futura que piore as emendas falhe alto em vez de degradar a imagem em silêncio.
+
 ## Fora de escopo na v1
 
 - Captura só do viewport.

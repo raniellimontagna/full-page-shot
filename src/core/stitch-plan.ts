@@ -37,6 +37,17 @@ export interface FramePlacement {
  * This is only sound because planCapture caps canvasHeight at `stepCount * frameHeight`;
  * the two modules have to stay in step. Do not "simplify" either side back into
  * independent rounding — see the worked counterexample in page-metrics.ts.
+ *
+ * Accepted cost: the grid drifts from each frame's true device-pixel position. Frames are
+ * an integer `round(vh * dpr)` tall while the page content advances by the exact
+ * `vh * dpr`, so the sub-pixel residue accumulates down the page — up to 31 device px by
+ * step 63 of a ~48,000 px page at dpr 1.33. This is structural, not an artefact of the
+ * grid: a drift-minimising variant that keeps true positions wherever they do not break
+ * contiguity was swept over 24,472 combinations and produced the *same* 31 px maximum.
+ * Removing it would mean drawing frames a fraction taller than the bitmap actually is.
+ * The real choice is drift or holes, and holes are worse. The final frame is exempt — it
+ * is anchored to the canvas bottom, so the page bottom is always exact. See
+ * `docs/superpowers/specs/2026-09-01-full-page-shot-design.md`, "Known limitations".
  */
 export function computeFramePlacements(
   plan: CapturePlan,
@@ -44,6 +55,21 @@ export function computeFramePlacements(
 ): FramePlacement[] {
   const dpr = m.devicePixelRatio
   const frameHeight = Math.round(m.viewportHeight * dpr)
+
+  // Defence in depth for the cross-module contract. planCapture owns it: it caps
+  // canvasHeight at stepCount * frameHeight precisely so the grid below can cover
+  // every row. TypeScript cannot express the invariant, so if someone changes how
+  // planCapture derives its step count or its canvas height without re-running the
+  // property test, fail loudly here rather than silently emitting a screenshot with
+  // uncovered rows at the bottom.
+  const reach = plan.steps.length * frameHeight
+  if (plan.canvasHeight > reach) {
+    throw new Error(
+      `computeFramePlacements: canvasHeight ${plan.canvasHeight} exceeds what ` +
+        `${plan.steps.length} frame(s) of ${frameHeight} device px can cover (${reach}). ` +
+        'planCapture must clamp canvasHeight to stepCount * round(viewportHeight * dpr).',
+    )
+  }
 
   const last = plan.steps.length - 1
   const destYs = plan.steps.map((_, i) =>

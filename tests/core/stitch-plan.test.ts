@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { planCapture } from '../../src/core/page-metrics'
 import { computeFramePlacements } from '../../src/core/stitch-plan'
-import type { PageMeasurements } from '../../src/core/types'
+import type { CapturePlan, PageMeasurements } from '../../src/core/types'
 
 const base: PageMeasurements = {
   scrollWidth: 1200,
@@ -168,6 +168,38 @@ describe('computeFramePlacements', () => {
     }
   })
 
+  // The cross-module invariant is not expressible in the type system, so computeFramePlacements
+  // asserts it at runtime. This proves the guard actually fires — an unexercised guard is not
+  // a guard. The plan below is hand-built to violate the contract the way a future regression
+  // in planCapture would: two frames of 941 device px cannot cover 1883 rows.
+  it('throws when canvasHeight exceeds what the frames can physically cover', () => {
+    const m: PageMeasurements = {
+      scrollWidth: 1200,
+      scrollHeight: 1506,
+      viewportWidth: 1200,
+      viewportHeight: 753,
+      devicePixelRatio: 1.25,
+      scrollX: 0,
+      scrollY: 0,
+    }
+    const brokenPlan: CapturePlan = {
+      steps: [
+        { index: 0, scrollY: 0 },
+        { index: 1, scrollY: 753 },
+      ],
+      canvasWidth: 1500,
+      // What the old, unclamped round(scrollHeight * dpr) produced. Row 1882 is uncoverable.
+      canvasHeight: 1883,
+      truncated: false,
+    }
+    expect(() => computeFramePlacements(brokenPlan, m)).toThrow(
+      /canvasHeight 1883 exceeds what 2 frame\(s\) of 941 device px can cover \(1882\)/,
+    )
+    // The plan planCapture actually produces for these measurements is accepted.
+    expect(planCapture(m).canvasHeight).toBe(1882)
+    expect(() => computeFramePlacements(planCapture(m), m)).not.toThrow()
+  })
+
   // Property test: the exhaustive sweep that validated the uniform frame grid.
   //
   // For every (dpr, viewportHeight, scrollHeight) combination, walk the plan the way
@@ -184,6 +216,7 @@ describe('computeFramePlacements', () => {
 
     const failures: string[] = []
     let checked = 0
+    let maxInteriorDrift = 0
 
     for (const dpr of dprValues) {
       for (const viewportHeight of viewportHeights) {
@@ -202,6 +235,13 @@ describe('computeFramePlacements', () => {
           const placements = computeFramePlacements(plan, m)
           const frameHeight = Math.round(viewportHeight * dpr)
           const where = `dpr=${dpr}, viewportHeight=${viewportHeight}, scrollHeight=${scrollHeight}`
+
+          for (const [i, p] of placements.entries()) {
+            // The final frame is anchored to the canvas bottom, so it is exempt by design.
+            if (i === placements.length - 1) continue
+            const trueDestY = Math.round((plan.steps[i]?.scrollY ?? 0) * dpr)
+            maxInteriorDrift = Math.max(maxInteriorDrift, Math.abs(p.destY - trueDestY))
+          }
 
           const covered = new Uint8Array(plan.canvasHeight)
           for (const p of placements) {
@@ -241,5 +281,67 @@ describe('computeFramePlacements', () => {
       failures,
       `${failures.length} failing combination(s):\n${failures.slice(0, 20).join('\n')}`,
     ).toEqual([])
+
+    // Drift bound, measured — not chosen. Over this grid the worst interior frame sits
+    // 3 device px from its true position (dpr 1.33, viewportHeight 720, scrollHeight 5762,
+    // frame 7 of 9). Pages here top out at 6000 CSS px; the long-page bound is asserted
+    // separately below. Locked so a change that makes seams materially worse fails loudly.
+    expect(maxInteriorDrift, `interior drift grew to ${maxInteriorDrift} device px`).toBeLessThanOrEqual(3)
+  })
+
+  // Frames are an integer round(viewportHeight * dpr) tall, but the page content they show
+  // advances by the exact viewportHeight * dpr. The sub-pixel residue accumulates down the
+  // uniform grid, so interior seams on a long fractional-dpr page land slightly off their
+  // true position. This is accepted (the alternative is uncovered rows — see the coverage
+  // property above), but it must not silently get worse, so the magnitude is pinned here.
+  //
+  // Only destY arithmetic is exercised, no per-row coverage walk, so this can afford much
+  // longer pages than the coverage sweep: scrollHeight up to 60,000 CSS px.
+  it('property: interior seam drift stays within its measured bound on very long pages', () => {
+    const dprValues = [1, 1.25, 1.33, 1.5, 1.75, 2, 2.5, 3]
+    const viewportHeights = [400, 720, 753, 800, 801, 823, 1080]
+
+    let maxDrift = 0
+    let worst = 'none'
+    let checked = 0
+
+    for (const dpr of dprValues) {
+      for (const viewportHeight of viewportHeights) {
+        for (let scrollHeight = 200; scrollHeight <= 60_000; scrollHeight += 7) {
+          checked += 1
+          const m: PageMeasurements = {
+            scrollWidth: 1200,
+            scrollHeight,
+            viewportWidth: 1200,
+            viewportHeight,
+            devicePixelRatio: dpr,
+            scrollX: 0,
+            scrollY: 0,
+          }
+          const plan = planCapture(m)
+          const placements = computeFramePlacements(plan, m)
+
+          for (const [i, p] of placements.entries()) {
+            // The final frame is anchored to the canvas bottom by design, so its offset
+            // from the true position is intended, not drift. The page bottom stays exact.
+            if (i === placements.length - 1) continue
+            const trueDestY = Math.round((plan.steps[i]?.scrollY ?? 0) * dpr)
+            const drift = Math.abs(p.destY - trueDestY)
+            if (drift > maxDrift) {
+              maxDrift = drift
+              worst = `dpr=${dpr}, viewportHeight=${viewportHeight}, scrollHeight=${scrollHeight}, frame ${i} of ${placements.length}`
+            }
+          }
+        }
+      }
+    }
+
+    expect(checked).toBe(478_408)
+    // 31 device px (~23 CSS px at dpr 1.33) is what this grid actually produces, at
+    // dpr 1.33 / viewportHeight 753 / ~48,200 CSS px, frame 63. It is stable: sweeping the
+    // same grid at scrollHeight steps of 7, 13, 31, 61 and 101 all report exactly 31. It is
+    // also near the structural ceiling — drift is bounded by
+    // (canvas row limit / frameHeight) x the sub-pixel residue, which is under 0.5 per step.
+    expect(maxDrift, `worst interior drift ${maxDrift} device px at ${worst}`).toBeLessThanOrEqual(31)
   })
 })
