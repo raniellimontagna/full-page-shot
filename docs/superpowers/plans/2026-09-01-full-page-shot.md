@@ -506,9 +506,18 @@ export function computeFramePlacements(
   const dpr = m.devicePixelRatio
   const frameHeight = Math.round(m.viewportHeight * dpr)
 
-  return plan.steps.map((step) => {
+  // sourceHeight must be derived from where the NEXT frame actually lands, not
+  // from a constant frameHeight. With a fractional devicePixelRatio (1.25, 1.5,
+  // 1.75 — common on Windows and ChromeOS), round(scrollY * dpr) does not
+  // advance by round(viewportHeight * dpr) each step, and the drift leaves
+  // uncovered rows. Verified case: dpr 1.25, viewportHeight 801, scrollHeight
+  // 2500 leaves device row 2002 drawn by no frame at all.
+  return plan.steps.map((step, i) => {
     const destY = Math.round(step.scrollY * dpr)
-    const sourceHeight = Math.min(frameHeight, plan.canvasHeight - destY)
+    const next = plan.steps[i + 1]
+    const nextDestY = next ? Math.round(next.scrollY * dpr) : plan.canvasHeight
+    const span = Math.min(nextDestY, plan.canvasHeight) - destY
+    const sourceHeight = Math.max(0, Math.min(frameHeight, span))
     return { index: step.index, destY, sourceHeight }
   })
 }
