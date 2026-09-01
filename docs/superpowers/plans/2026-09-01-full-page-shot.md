@@ -170,10 +170,10 @@ describe('manifest', () => {
 })
 ```
 
-- [ ] **Step 8: Run the test to verify it fails**
+- [ ] **Step 8: Run the test**
 
 Run: `pnpm test`
-Expected: FAIL — `src/manifest.config.ts` resolves but `src/background/index.ts` does not exist yet, or the assertions fail. Confirm the failure is about the code, not about Vitest configuration.
+Expected: the assertions describe the manifest object, which already exists, so this test legitimately passes on the first run. Task 1 is scaffolding — there is no behaviour here to drive red-green, and inventing a failing case would be theatre. What matters is that Vitest resolves and runs the file; if it errors on configuration rather than assertions, fix the configuration before moving on. Every later task has a real red phase.
 
 - [ ] **Step 9: Write the minimal service worker**
 
@@ -1139,7 +1139,7 @@ export async function savePrefs(prefs: Prefs): Promise<void> {
 - [ ] **Step 4: Run the prefs tests to verify they pass**
 
 Run: `pnpm vitest run tests/shared/prefs.test.ts`
-Expected: PASS, 11 tests.
+Expected: PASS, 12 tests.
 
 - [ ] **Step 5: Write the failing capture-loop test**
 
@@ -2047,3 +2047,5 @@ These are known unknowns, listed so they are not mistaken for oversights:
 3. **The CRXJS output path for the content script** (`src/content/index.ts.js` in `executeScript`) must be verified against real build output in Task 7, Step 9.
 4. **TypeScript 7 is very new.** If `@types/chrome` or the Vitest toolchain misbehaves, fall back to `typescript@5.9.x` per the Global Constraints.
 5. **Pages using a scroll container instead of the document** (some SPAs) will capture as a single viewport. Not handled in v1; would need the content script to detect the real scrolling element.
+
+6. **jsdom may not resolve `position: sticky`** in `getComputedStyle`. If Task 4's sticky test cannot pass against real jsdom, keep `sticky` in the production selector and assert it in the e2e layer instead — do not narrow the selector to make a unit test green.
