@@ -591,10 +591,19 @@ export type OffscreenResponse = { ok: true } | { ok: false; error: string }
 
 - [ ] **Step 2: Configure a jsdom environment for content tests**
 
-Add to `vite.config.ts` under `test`:
+`environmentMatchGlobs` was REMOVED in Vitest 4 — writing it silently does nothing and the tests keep running under `node`. Use `projects` instead. Add to `vite.config.ts` under `test`:
 
 ```ts
-    environmentMatchGlobs: [['tests/content/**', 'jsdom']],
+    projects: [
+      {
+        extends: true,
+        test: { name: 'jsdom', include: ['tests/content/**'], environment: 'jsdom' },
+      },
+      {
+        extends: true,
+        test: { name: 'node', include: ['tests/**'], exclude: ['tests/content/**'] },
+      },
+    ],
 ```
 
 - [ ] **Step 3: Write the failing tests**
@@ -1498,13 +1507,25 @@ import react from '@vitejs/plugin-react'
   plugins: [react(), crx({ manifest })],
 ```
 
-And extend the jsdom glob:
+And extend the jsdom project to cover the options tests, remembering to exclude them from the node project too:
 
 ```ts
-    environmentMatchGlobs: [
-      ['tests/content/**', 'jsdom'],
-      ['tests/options/**', 'jsdom'],
-    ],
+      {
+        extends: true,
+        test: {
+          name: 'jsdom',
+          include: ['tests/content/**', 'tests/options/**'],
+          environment: 'jsdom',
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'node',
+          include: ['tests/**'],
+          exclude: ['tests/content/**', 'tests/options/**'],
+        },
+      },
 ```
 
 - [ ] **Step 3: Write the failing test**
