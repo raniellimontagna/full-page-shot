@@ -12,6 +12,7 @@ describe('options App', () => {
     const download = await screen.findByLabelText(/download/i)
     expect(clipboard).not.toBeChecked()
     expect(download).toBeChecked()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('saves when a preference is toggled', async () => {

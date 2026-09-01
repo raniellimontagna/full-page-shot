@@ -1608,7 +1608,14 @@ describe('options App', () => {
 })
 ```
 
-Add `import '@testing-library/jest-dom/vitest'` to a `tests/setup.ts` and register it via `test.setupFiles: ['tests/setup.ts']` in `vite.config.ts`.
+Add `import '@testing-library/jest-dom/vitest'` to a `tests/setup.ts` and register it via
+`test.setupFiles: ['tests/setup.ts']` in `vite.config.ts`. Two details that are not optional:
+
+- Also call `afterEach(cleanup)` in that setup file. Without it, React trees leak between tests
+  and queries start matching elements from a previous render.
+- Exclude `tests/setup.ts` from the projects' test globs, or Vitest tries to run the setup file
+  itself as a suite and fails with no tests found.
+
 
 - [ ] **Step 4: Run the test to verify it fails**
 

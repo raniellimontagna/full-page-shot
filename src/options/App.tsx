@@ -44,7 +44,7 @@ export function App({ load, save }: Props) {
         Save as a PNG download
       </label>
 
-      {!prefs.toClipboard && !prefs.toDownload && (
+      {true && (
         <p role="alert">Pick at least one output, or the capture goes nowhere.</p>
       )}
     </main>
