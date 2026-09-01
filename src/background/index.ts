@@ -141,70 +141,220 @@ async function setBadge(tabId: number, text: string, color: string): Promise<voi
   setTimeout(() => void chrome.action.setBadgeText({ tabId, text: '' }).catch(() => {}), 3000)
 }
 
+/**
+ * The whole capture, from injection to delivery, for one tab.
+ *
+ * Extracted out of the `onClicked` listener so the end-to-end suite can drive
+ * *this* function -- the same code a real toolbar click runs -- instead of a
+ * parallel re-implementation of the wiring. A test-only re-implementation is
+ * exactly the kind of harness that stays green while the real path rots, and
+ * this project has already shipped two such bugs. Nothing else about the
+ * behaviour changed: the listener below is now a one-line call.
+ */
+export async function captureTab(tab: chrome.tabs.Tab): Promise<void> {
+  const tabId = tab.id
+  // Captured at click time. Every later window-scoped call is pinned to this
+  // window rather than to whatever "current" means later on.
+  const windowId = tab.windowId
+  const url = tab.url
+  if (tabId === undefined) return
+  if (!isCapturableUrl(url)) {
+    await setBadge(tabId, '✕', '#b3261e')
+    return
+  }
+
+  let downloadPending = false
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: [contentScriptPath()],
+    })
+
+    const outcome = await runCapture(tabId, {
+      sendToContent: (id, request: ContentRequest) =>
+        chrome.tabs.sendMessage(id, request) as Promise<ContentResponse>,
+      sendToOffscreen: (request: OffscreenRequest) =>
+        chrome.runtime.sendMessage(request) as Promise<OffscreenResponse>,
+      // Pinned to the captured window. Called without a windowId this grabs
+      // the *last focused* window, so merely focusing a second window would
+      // start splicing that window's tab into the screenshot.
+      captureVisibleTab: () => chrome.tabs.captureVisibleTab(windowId, { format: 'png' }),
+      ensureOffscreen,
+      // Asks the tab about itself rather than asking which tab is "current".
+      // `chrome.tabs.query({ active: true, currentWindow: true })` resolves
+      // "current window" to the last focused one when called from a service
+      // worker, so focusing any other window aborted a perfectly valid
+      // capture. This and the windowId above are one fix: the old abort was
+      // load-bearing precisely because captureVisibleTab was unpinned, so
+      // removing the false aborts without pinning the capture would have
+      // traded a nuisance for a wrong screenshot.
+      isTabStillActive: async () => (await chrome.tabs.get(tabId)).active,
+      prefs: await loadPrefs(),
+      filename: buildFilename(new Date(), new URL(url).hostname),
+      delay,
+    })
+
+    downloadPending = outcome.downloadPending
+    await setBadge(tabId, '✓', '#1e8e3e')
+  } catch (error) {
+    console.error('[full-page-shot]', error)
+    await setBadge(tabId, '✕', '#b3261e')
+    // `downloadPending` stays false: `runCapture` only throws before
+    // `finishCapture` succeeds, and a download that failed outright rejects
+    // rather than resolving, so there is no live blob URL to protect.
+  } finally {
+    // In `finally` so no failure between here and the badge can skip it and
+    // strand the offscreen document. Deliberately after the badge: the user
+    // has their result, and this may block waiting on a slow write.
+    //
+    // `.catch` because `releaseOffscreen` can still reject: the
+    // `chrome.downloads.search` poll inside `waitForDownloadsToDrain` is
+    // unguarded, and the `onClicked` listener has no outer handler, so a downloads-API
+    // error while `downloadPending` is true would surface as an unhandled
+    // rejection. Failing to close the document is the benign outcome
+    // anyway -- the next capture reuses it.
+    await releaseOffscreen(downloadPending).catch(() => {})
+  }
+}
+
 chrome.action.onClicked.addListener((tab) => {
-  void (async () => {
-    const tabId = tab.id
-    // Captured at click time. Every later window-scoped call is pinned to this
-    // window rather than to whatever "current" means later on.
-    const windowId = tab.windowId
-    const url = tab.url
-    if (tabId === undefined) return
-    if (!isCapturableUrl(url)) {
-      await setBadge(tabId, '✕', '#b3261e')
-      return
-    }
-
-    let downloadPending = false
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: [contentScriptPath()],
-      })
-
-      const outcome = await runCapture(tabId, {
-        sendToContent: (id, request: ContentRequest) =>
-          chrome.tabs.sendMessage(id, request) as Promise<ContentResponse>,
-        sendToOffscreen: (request: OffscreenRequest) =>
-          chrome.runtime.sendMessage(request) as Promise<OffscreenResponse>,
-        // Pinned to the captured window. Called without a windowId this grabs
-        // the *last focused* window, so merely focusing a second window would
-        // start splicing that window's tab into the screenshot.
-        captureVisibleTab: () => chrome.tabs.captureVisibleTab(windowId, { format: 'png' }),
-        ensureOffscreen,
-        // Asks the tab about itself rather than asking which tab is "current".
-        // `chrome.tabs.query({ active: true, currentWindow: true })` resolves
-        // "current window" to the last focused one when called from a service
-        // worker, so focusing any other window aborted a perfectly valid
-        // capture. This and the windowId above are one fix: the old abort was
-        // load-bearing precisely because captureVisibleTab was unpinned, so
-        // removing the false aborts without pinning the capture would have
-        // traded a nuisance for a wrong screenshot.
-        isTabStillActive: async () => (await chrome.tabs.get(tabId)).active,
-        prefs: await loadPrefs(),
-        filename: buildFilename(new Date(), new URL(url).hostname),
-        delay,
-      })
-
-      downloadPending = outcome.downloadPending
-      await setBadge(tabId, '✓', '#1e8e3e')
-    } catch (error) {
-      console.error('[full-page-shot]', error)
-      await setBadge(tabId, '✕', '#b3261e')
-      // `downloadPending` stays false: `runCapture` only throws before
-      // `finishCapture` succeeds, and a download that failed outright rejects
-      // rather than resolving, so there is no live blob URL to protect.
-    } finally {
-      // In `finally` so no failure between here and the badge can skip it and
-      // strand the offscreen document. Deliberately after the badge: the user
-      // has their result, and this may block waiting on a slow write.
-      //
-      // `.catch` because `releaseOffscreen` can still reject: the
-      // `chrome.downloads.search` poll inside `waitForDownloadsToDrain` is
-      // unguarded, and this IIFE has no outer handler, so a downloads-API
-      // error while `downloadPending` is true would surface as an unhandled
-      // rejection. Failing to close the document is the benign outcome
-      // anyway -- the next capture reuses it.
-      await releaseOffscreen(downloadPending).catch(() => {})
-    }
-  })()
+  void captureTab(tab)
 })
+
+// ---------------------------------------------------------------------------
+// End-to-end test hook.
+//
+// `import.meta.env.VITE_FPS_E2E` is inlined as a string literal at build time,
+// so this whole block is dead code the bundler drops from the production
+// build; only `pnpm build:e2e` (which sets the variable and writes to
+// `dist-e2e/`) emits it. `tests/background/e2e-hook.test.ts` asserts the gate
+// and `pnpm build` is grepped for the symbol, so a shipped hook cannot pass
+// unnoticed.
+//
+// The hook deliberately instruments only *Chrome APIs*, never the product's
+// own functions: it wraps `captureVisibleTab` to count real frames and
+// `runtime.sendMessage` to observe the `finishCapture` reply, then calls
+// `captureTab` -- the exact function a toolbar click runs. The badge is read
+// back rather than an error being returned, because the badge is the real
+// user-visible success signal and asserting on it tests more.
+// ---------------------------------------------------------------------------
+if (import.meta.env.VITE_FPS_E2E === '1') {
+  interface CaptureProbe {
+    /** Whether a tab matching the requested URL was found and captured. */
+    badge: string
+    /** How many times `chrome.tabs.captureVisibleTab` actually ran. */
+    frames: number
+    /** Wall time of the whole capture, used to prove single-frame captures. */
+    elapsedMs: number
+    /** The `downloadPending` field of the `finishCapture` reply, if any. */
+    downloadPending: boolean | null
+    /** Whether the offscreen document was closed before the hook returned. */
+    offscreenClosed: boolean
+    /**
+     * Whatever `captureTab` logged on its failure path. The product swallows
+     * the error (a badge is all the user gets), so without this a failing
+     * capture is indistinguishable from a mysterious one and the suite could
+     * only report "it went red".
+     */
+    error: string | null
+    /** The stitched PNG as a data URL, when `mode: 'export'` was requested. */
+    dataUrl: string | null
+  }
+
+  /**
+   * `mode: 'export'` swaps the outbound `finishCapture` for the offscreen
+   * document's test-only `exportCapture`, so the suite gets the stitched image
+   * back instead of it being handed to the sinks. Everything upstream of that
+   * one message -- measuring, planning, scrolling, hiding fixed elements,
+   * capturing, stitching, restoring -- is the production path untouched.
+   *
+   * `mode: 'deliver'` leaves the message alone and exercises the real sinks.
+   */
+  const probeCapture = async (
+    targetUrl: string,
+    mode: 'deliver' | 'export' = 'deliver',
+  ): Promise<CaptureProbe> => {
+    const tab = (await chrome.tabs.query({})).find((candidate) => candidate.url === targetUrl)
+    if (!tab || tab.id === undefined) throw new Error(`no tab at ${targetUrl}`)
+
+    const realCapture = chrome.tabs.captureVisibleTab
+    const realSend = chrome.runtime.sendMessage
+    const realClose = chrome.offscreen.closeDocument
+    const realConsoleError = console.error
+
+    let frames = 0
+    let downloadPending: boolean | null = null
+    let dataUrl: string | null = null
+    let offscreenClosed = false
+    let error: string | null = null
+
+    const tabsApi = chrome.tabs as unknown as Record<string, unknown>
+    const runtimeApi = chrome.runtime as unknown as Record<string, unknown>
+    const offscreenApi = chrome.offscreen as unknown as Record<string, unknown>
+
+    tabsApi.captureVisibleTab = (...args: unknown[]): unknown => {
+      frames += 1
+      return (realCapture as (...a: unknown[]) => unknown).apply(chrome.tabs, args)
+    }
+    runtimeApi.sendMessage = (...args: unknown[]): unknown => {
+      const request = args[0] as { type?: string } | undefined
+      const isFinish = request?.type === 'finishCapture'
+      const outbound = isFinish && mode === 'export' ? [{ type: 'exportCapture' }, ...args.slice(1)] : args
+      const result = (realSend as (...a: unknown[]) => unknown).apply(chrome.runtime, outbound)
+      if (isFinish && result instanceof Promise) {
+        void result.then((response: unknown) => {
+          const reply = response as { ok?: boolean; downloadPending?: boolean; dataUrl?: string }
+          downloadPending = reply?.ok === true ? (reply.downloadPending ?? null) : null
+          dataUrl = reply?.dataUrl ?? null
+        })
+      }
+      return result
+    }
+    offscreenApi.closeDocument = (...args: unknown[]): unknown => {
+      offscreenClosed = true
+      return (realClose as (...a: unknown[]) => unknown).apply(chrome.offscreen, args)
+    }
+
+    console.error = (...args: unknown[]): void => {
+      error = args.map((value) => (value instanceof Error ? value.message : String(value))).join(' ')
+      realConsoleError.apply(console, args)
+    }
+
+    const startedAt = Date.now()
+    try {
+      await captureTab(tab)
+    } finally {
+      tabsApi.captureVisibleTab = realCapture
+      runtimeApi.sendMessage = realSend
+      offscreenApi.closeDocument = realClose
+      console.error = realConsoleError
+    }
+    const elapsedMs = Date.now() - startedAt
+
+    return {
+      badge: await chrome.action.getBadgeText({ tabId: tab.id }),
+      frames,
+      elapsedMs,
+      downloadPending,
+      offscreenClosed,
+      dataUrl,
+      error,
+    }
+  }
+
+  Object.assign(globalThis, {
+    __fpsCaptureForTest: probeCapture,
+    /** Sets the delivery preferences through the same storage the product reads. */
+    __fpsSetPrefsForTest: (prefs: { toClipboard: boolean; toDownload: boolean }) =>
+      chrome.storage.sync.set(prefs),
+    /**
+     * One raw `captureVisibleTab` frame, for the fractional-DPI question: does
+     * Chrome's own frame height equal `Math.round(viewportHeight * dpr)`?
+     */
+    __fpsGrabFrameForTest: async (targetUrl: string): Promise<string> => {
+      const tab = (await chrome.tabs.query({})).find((candidate) => candidate.url === targetUrl)
+      if (!tab || tab.windowId === undefined) throw new Error(`no tab at ${targetUrl}`)
+      return await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' })
+    },
+  })
+}

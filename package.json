@@ -7,17 +7,21 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:e2e": "VITE_FPS_E2E=1 vite build --outDir dist-e2e --emptyOutDir",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p e2e/tsconfig.json",
+    "test:e2e": "pnpm build:e2e && playwright test"
   },
   "license": "ISC",
   "devDependencies": {
     "@crxjs/vite-plugin": "2.7.1",
+    "@playwright/test": "^1.62.1",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
     "@testing-library/user-event": "^14.6.6",
     "@types/chrome": "0.2.7",
+    "@types/node": "^26.4.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "6.1.1",

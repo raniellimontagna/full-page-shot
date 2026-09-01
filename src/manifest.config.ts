@@ -6,13 +6,47 @@ import { defineManifest, type ManifestV3Export } from '@crxjs/vite-plugin'
 // `vite.config.ts`) can read fields like `manifest_version` directly.
 type ResolvedManifest = Extract<ManifestV3Export, { manifest_version: number }>
 
+// `activeTab` is granted by a user gesture -- a real click on the toolbar
+// button -- and there is no way to synthesise that click from Playwright or
+// the DevTools protocol. So the end-to-end build, and *only* that build,
+// swaps in an explicit host permission for the local fixture server plus the
+// `tabs` permission the harness needs to find a fixture tab by URL. It is
+// written to `dist-e2e/`, never `dist/`, and `pnpm build` leaves this branch
+// untaken -- see `tests/manifest.test.ts`, which asserts the shipped
+// permission set unchanged.
+// Declared locally rather than by adding `@types/node` to a project whose
+// every other file runs in the browser or a service worker. This module is
+// evaluated by Vite in Node, and this is the only Node global it touches.
+declare const process: { env: Record<string, string | undefined> }
+const isE2eBuild = process.env.VITE_FPS_E2E === '1'
+const e2eOnly = isE2eBuild
+  ? {
+      // `<all_urls>`, not the fixture origin: `chrome.tabs.captureVisibleTab`
+      // accepts only `<all_urls>` or `activeTab`, never a narrower host match
+      // (verified -- a `http://localhost:5199/*` grant fails it with "Either
+      // the '<all_urls>' or 'activeTab' permission is required"). The shipped
+      // extension satisfies it with `activeTab`, which is why `dist/` needs no
+      // host permission at all.
+      host_permissions: ['<all_urls>'],
+    }
+  : {}
+
 export default defineManifest({
   manifest_version: 3,
   name: 'Full Page Shot',
   version: '0.1.0',
   description: 'Capture the entire scrollable page in one click.',
   minimum_chrome_version: '116',
-  permissions: ['activeTab', 'scripting', 'offscreen', 'downloads', 'clipboardWrite', 'storage'],
+  permissions: [
+    'activeTab',
+    'scripting',
+    'offscreen',
+    'downloads',
+    'clipboardWrite',
+    'storage',
+    ...(isE2eBuild ? (['tabs'] as const) : []),
+  ],
+  ...e2eOnly,
   options_page: 'src/options/options.html',
   action: {
     default_title: 'Capture full page',

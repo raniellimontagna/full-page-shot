@@ -60,6 +60,46 @@ function assertNever(request: never): OffscreenResponse {
 
 chrome.runtime.onMessage.addListener((request: OffscreenRequest, _sender, sendResponse) => {
   if (!('type' in request)) return false
+
+  // End-to-end test hook, dropped from the production bundle by the same
+  // build-flag gate as the one in `src/background/index.ts` (verified by
+  // grepping `dist/`). It is handled here, ahead of `handle`, rather than
+  // added to `OffscreenRequest`: the shipped protocol keeps exactly the four
+  // request types it is specified to have, and `handle` stays exhaustive over
+  // them with no test-only case to reason about.
+  //
+  // It exists because the e2e suite has to read the stitched image, and the
+  // only production route to the image -- the download and clipboard sinks --
+  // does not work from an offscreen document at all (see task-9-report.md).
+  // Without this, no assertion about the *pixels* could be made.
+  if (import.meta.env.VITE_FPS_E2E === '1' && (request as { type: string }).type === 'exportCapture') {
+    void (async () => {
+      if (!stitcher) {
+        sendResponse({ ok: false, error: 'no capture in progress' })
+        return
+      }
+      try {
+        const blob = await stitcher.toBlob()
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => {
+            resolve(String(reader.result))
+          }
+          reader.onerror = () => {
+            reject(new Error('failed to read stitched blob'))
+          }
+          reader.readAsDataURL(blob)
+        })
+        sendResponse({ ok: true, downloadPending: false, dataUrl })
+      } catch (error) {
+        sendResponse({ ok: false, error: String(error) })
+      } finally {
+        stitcher = null
+      }
+    })()
+    return true
+  }
+
   handle(request)
     .then(sendResponse)
     .catch((error: unknown) => {
