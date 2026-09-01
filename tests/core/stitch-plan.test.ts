@@ -210,6 +210,11 @@ describe('computeFramePlacements', () => {
   // This fails against independently rounded destY values (round(scrollY * dpr)) and
   // against an unclamped canvasHeight (round(scrollHeight * dpr)); it is the regression
   // guard for both modules at once.
+  // 30s timeout, not the 5s default: these sweeps are hundreds of thousands of
+  // plan evaluations and they overran the default on a loaded machine, failing
+  // the whole suite for a reason unrelated to the property under test. The
+  // sweep itself is deliberately unchanged -- the fix is the budget, not the
+  // coverage.
   it('property: every canvas row is covered across the dpr/viewport/scroll grid', () => {
     const dprValues = [1, 1.25, 1.33, 1.5, 1.75, 2, 2.5, 3]
     const viewportHeights = [400, 720, 753, 800, 801, 823, 1080]
@@ -287,7 +292,7 @@ describe('computeFramePlacements', () => {
     // frame 7 of 9). Pages here top out at 6000 CSS px; the long-page bound is asserted
     // separately below. Locked so a change that makes seams materially worse fails loudly.
     expect(maxInteriorDrift, `interior drift grew to ${maxInteriorDrift} device px`).toBeLessThanOrEqual(3)
-  })
+  }, 30_000)
 
   // Frames are an integer round(viewportHeight * dpr) tall, but the page content they show
   // advances by the exact viewportHeight * dpr. The sub-pixel residue accumulates down the
@@ -297,6 +302,11 @@ describe('computeFramePlacements', () => {
   //
   // Only destY arithmetic is exercised, no per-row coverage walk, so this can afford much
   // longer pages than the coverage sweep: scrollHeight up to 60,000 CSS px.
+  // 30s timeout, not the 5s default: these sweeps are hundreds of thousands of
+  // plan evaluations and they overran the default on a loaded machine, failing
+  // the whole suite for a reason unrelated to the property under test. The
+  // sweep itself is deliberately unchanged -- the fix is the budget, not the
+  // coverage.
   it('property: interior seam drift stays within its measured bound on very long pages', () => {
     const dprValues = [1, 1.25, 1.33, 1.5, 1.75, 2, 2.5, 3]
     const viewportHeights = [400, 720, 753, 800, 801, 823, 1080]
@@ -343,5 +353,5 @@ describe('computeFramePlacements', () => {
     // also near the structural ceiling — drift is bounded by
     // (canvas row limit / frameHeight) x the sub-pixel residue, which is under 0.5 per step.
     expect(maxDrift, `worst interior drift ${maxDrift} device px at ${worst}`).toBeLessThanOrEqual(31)
-  })
+  }, 30_000)
 })
