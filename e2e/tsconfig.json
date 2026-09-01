@@ -1,0 +1,11 @@
+{
+  // A separate project so the extension sources stay typed as browser code:
+  // adding "node" to the root `types` would let `src/` reach for Node globals
+  // that do not exist in a service worker, and nothing would catch it.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+  },
+  "include": ["../e2e", "../playwright.config.ts"]
+}

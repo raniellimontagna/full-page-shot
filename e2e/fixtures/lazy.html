@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>lazy</title>
+<style>
+  html,body{margin:0;background:#ffffff}
+  /* Starts white; the IntersectionObserver below paints it once it scrolls in,
+     which is the second, stricter lazy mechanism: the callback lands after
+     paint, so only the settle delay can catch it. */
+  #io{height:200px;background:#ffffff}
+  #footer{height:40px;background:#00ffff}
+</style></head>
+<body>
+  <div id="spacer-top"></div>
+  <!-- A real network fetch from the fixture server, deferred by the browser's
+       own lazy-loading heuristics rather than by a script. -->
+  <img id="lazy" loading="lazy" src="/lazy.png" width="400" height="300" alt="">
+  <div id="io"></div>
+  <div id="spacer-bottom"></div>
+  <div id="footer"></div>
+  <script>
+    document.getElementById('spacer-top').style.height = (window.innerHeight * 3) + 'px'
+    document.getElementById('spacer-bottom').style.height = window.innerHeight + 'px'
+    new IntersectionObserver((entries, observer) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue
+        entry.target.style.background = '#ffcc00'
+        observer.unobserve(entry.target)
+      }
+    }).observe(document.getElementById('io'))
+    document.documentElement.dataset.ready = '1'
+  </script>
+</body></html>

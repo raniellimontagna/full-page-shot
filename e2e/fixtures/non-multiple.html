@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>non multiple</title>
+<style>html,body{margin:0;background:#ffffff}</style></head>
+<body>
+  <div id="spacer" style="background:#404040"></div>
+  <!-- The last 40 CSS px of the page. If the bottom edge is cropped or the
+       final frame is misplaced, this band is missing from the stitched PNG. -->
+  <div id="footer" style="height:40px;background:#ff00ff"></div>
+  <script>
+    // 137 is the point: the page is deliberately NOT a whole number of
+    // viewports tall, so the final capture step is clamped to the page bottom
+    // and its frame overlaps its predecessor.
+    document.getElementById('spacer').style.height =
+      (window.innerHeight * 2 + 137 - 40) + 'px'
+    document.documentElement.dataset.ready = '1'
+  </script>
+</body></html>

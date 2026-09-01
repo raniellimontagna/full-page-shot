@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>long fixed header</title>
+<style>
+  html,body{margin:0;background:#ffffff}
+  /* rgb(255,0,128): a flat colour that appears nowhere else on the page, so a
+     whole-image scan for it is an exact test of "the header appears once". */
+  #hdr{position:fixed;top:0;left:0;right:0;height:60px;background:#ff0080}
+  .band{height:100px}
+  .a{background:#eeeeee}
+  .b{background:#cccccc}
+  #footer{height:40px;background:#00ffff}
+</style></head>
+<body>
+  <header id="hdr"></header>
+  <div id="content"></div>
+  <div id="footer"></div>
+  <script>
+    // Six viewports tall, so a header repeated at every frame boundary would
+    // show up five extra times.
+    const target = window.innerHeight * 6 - 40
+    const content = document.getElementById('content')
+    for (let y = 0; y < target; y += 100) {
+      const band = document.createElement('div')
+      band.className = 'band ' + ((y / 100) % 2 ? 'b' : 'a')
+      band.style.height = Math.min(100, target - y) + 'px'
+      content.append(band)
+    }
+    document.documentElement.dataset.ready = '1'
+  </script>
+</body></html>
