@@ -32,4 +32,16 @@ export default defineManifest({
     service_worker: 'src/background/index.ts',
     type: 'module',
   },
+  // No `web_accessible_resources` here on purpose. The content script is
+  // injected on demand by `chrome.scripting.executeScript` (activeTab) and is
+  // never declared statically, so nothing in this file references it -- and
+  // CRXJS only bundles what it can reach from the manifest, which is why the
+  // build emitted no content script at all until now. Listing it as a
+  // `web_accessible_resources` *resource* does NOT fix that: CRXJS treats WAR
+  // entries as plain assets and copies them verbatim, so that route ships the
+  // raw, unbundled `.ts` source, which cannot be injected. The working fix is
+  // the `?script&iife` import in `src/background/index.ts`: CRXJS bundles that
+  // into a self-contained IIFE and appends the emitted path to
+  // `web_accessible_resources` in the built manifest by itself. See
+  // `contentScriptPath()` there, which reads that path back at runtime.
 }) as ResolvedManifest

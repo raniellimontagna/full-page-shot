@@ -8,7 +8,9 @@
     "noUncheckedIndexedAccess": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "types": ["chrome", "vite/client"],
+    // `@crxjs/vite-plugin/client` declares the `*?script&iife` module used by
+    // the background service worker to pull in the bundled content script.
+    "types": ["chrome", "vite/client", "@crxjs/vite-plugin/client"],
     "jsx": "react-jsx"
   },
   "include": ["src", "tests", "vite.config.ts"]
