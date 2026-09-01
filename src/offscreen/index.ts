@@ -30,7 +30,25 @@ async function handle(request: OffscreenRequest): Promise<OffscreenResponse> {
     case 'abortCapture':
       stitcher = null
       return { ok: true }
+    default:
+      // `handle` is only ever exhaustive against the declared
+      // `OffscreenRequest` union, and `noImplicitReturns` is off. A message
+      // from outside that contract (e.g. a `ContentRequest` mis-routed to
+      // this listener) would otherwise fall through every case, resolve
+      // `handle()` to `undefined`, and hand the caller `sendResponse(undefined)`
+      // — silently breaking the `OffscreenResponse` contract instead of
+      // failing loudly. `assertNever` both names the unknown type in the
+      // response *and* makes the discriminated union exhaustive at compile
+      // time: if a future `OffscreenRequest` variant is added without a
+      // case here, `request` stops narrowing to `never` at this point and
+      // the call below fails to typecheck.
+      return assertNever(request)
   }
+}
+
+function assertNever(request: never): OffscreenResponse {
+  const unexpected = request as { type?: unknown }
+  return { ok: false, error: `unknown offscreen request type: ${JSON.stringify(unexpected?.type)}` }
 }
 
 chrome.runtime.onMessage.addListener((request: OffscreenRequest, _sender, sendResponse) => {
