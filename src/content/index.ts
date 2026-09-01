@@ -58,6 +58,33 @@ async function handle(request: ContentRequest): Promise<ContentResponse> {
     return { ok: true }
   }
 
+  // The watchdog has already fired: this page is no longer in a capture, and
+  // `originalScrollY === null` is how it knows -- only `measure` sets it, and
+  // only `restore`/`restorePage` clear it. Obeying `hideFixed`/`scrollTo` from
+  // here would do real damage rather than merely waste work. The header is
+  // already un-hidden, so it would repeat down every remaining frame; one
+  // frame would be taken at the original scroll position; and worst, the
+  // trailing `restore` is now a no-op, so re-scrolling would strand the user's
+  // page at the last frame's position -- violating the exact guarantee the
+  // watchdog exists to enforce.
+  //
+  // `unwrap` in `runCapture` throws on this shape, which aborts the capture,
+  // runs its `finally`, and shows the failure badge. No protocol change and no
+  // check at every call site.
+  //
+  // `measure` is exempt: it is what starts a capture, so a null latch there is
+  // the normal case, not an abandoned one.
+  //
+  // This is not a disaster-only path. `finishCapture` does not respond until
+  // the download reaches a terminal state, and `restore` is sent only after
+  // that -- so a user with "Ask where to save each file" enabled trips the
+  // watchdog roughly ten seconds after the final frame on every capture. That
+  // instance is harmless (no commands follow), but the guard has to be correct
+  // in ordinary use, not just in eviction.
+  if (request.type !== 'measure' && originalScrollY === null) {
+    return { ok: false, error: 'capture abandoned; page already restored' }
+  }
+
   armWatchdog()
 
   switch (request.type) {

@@ -197,7 +197,14 @@ chrome.action.onClicked.addListener((tab) => {
       // In `finally` so no failure between here and the badge can skip it and
       // strand the offscreen document. Deliberately after the badge: the user
       // has their result, and this may block waiting on a slow write.
-      await releaseOffscreen(downloadPending)
+      //
+      // `.catch` because `releaseOffscreen` can still reject: the
+      // `chrome.downloads.search` poll inside `waitForDownloadsToDrain` is
+      // unguarded, and this IIFE has no outer handler, so a downloads-API
+      // error while `downloadPending` is true would surface as an unhandled
+      // rejection. Failing to close the document is the benign outcome
+      // anyway -- the next capture reuses it.
+      await releaseOffscreen(downloadPending).catch(() => {})
     }
   })()
 })

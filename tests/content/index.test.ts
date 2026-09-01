@@ -124,6 +124,24 @@ describe('content script restore watchdog', () => {
     expect(scrollTo).toHaveBeenCalledWith({ top: 500, left: 0, behavior: 'instant' })
   })
 
+  // Without this the watchdog is invisible to the orchestrator: it would keep
+  // scrolling and capturing against a page that has already put itself back,
+  // repeating the un-hidden header down every remaining frame and -- because
+  // `restorePage` nulls the latch -- stranding the page at the last frame's
+  // scroll position when the trailing `restore` turns into a no-op.
+  it('refuses capture commands once the watchdog has restored the page', async () => {
+    vi.useFakeTimers()
+    const { listener, watchdogMs } = await loadContentScript()
+    vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+    stubScrollPosition(500)
+
+    await send(listener, { type: 'measure' })
+    vi.advanceTimersByTime(watchdogMs)
+
+    const response = await send(listener, { type: 'scrollTo', y: 800 })
+    expect(response).toEqual({ ok: false, error: expect.stringContaining('already restored') })
+  })
+
   it('does not fire while capture commands keep arriving', async () => {
     vi.useFakeTimers()
     const { listener, watchdogMs } = await loadContentScript()
