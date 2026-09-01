@@ -167,4 +167,79 @@ describe('computeFramePlacements', () => {
       expect(covered.has(y), `row ${y} uncovered when accounting for drawImage clamp`).toBe(true)
     }
   })
+
+  // Property test: the exhaustive sweep that validated the uniform frame grid.
+  //
+  // For every (dpr, viewportHeight, scrollHeight) combination, walk the plan the way
+  // Task 6 actually paints it — each frame contributes Math.min(sourceHeight, frameHeight)
+  // rows starting at destY, because drawImage cannot read more rows than the bitmap has —
+  // and assert the canvas ends up fully covered with nothing spilling past it.
+  //
+  // This fails against independently rounded destY values (round(scrollY * dpr)) and
+  // against an unclamped canvasHeight (round(scrollHeight * dpr)); it is the regression
+  // guard for both modules at once.
+  it('property: every canvas row is covered across the dpr/viewport/scroll grid', () => {
+    const dprValues = [1, 1.25, 1.33, 1.5, 1.75, 2, 2.5, 3]
+    const viewportHeights = [400, 720, 753, 800, 801, 823, 1080]
+
+    const failures: string[] = []
+    let checked = 0
+
+    for (const dpr of dprValues) {
+      for (const viewportHeight of viewportHeights) {
+        for (let scrollHeight = 200; scrollHeight <= 6000; scrollHeight += 3) {
+          checked += 1
+          const m: PageMeasurements = {
+            scrollWidth: 1200,
+            scrollHeight,
+            viewportWidth: 1200,
+            viewportHeight,
+            devicePixelRatio: dpr,
+            scrollX: 0,
+            scrollY: 0,
+          }
+          const plan = planCapture(m)
+          const placements = computeFramePlacements(plan, m)
+          const frameHeight = Math.round(viewportHeight * dpr)
+          const where = `dpr=${dpr}, viewportHeight=${viewportHeight}, scrollHeight=${scrollHeight}`
+
+          const covered = new Uint8Array(plan.canvasHeight)
+          for (const p of placements) {
+            if (p.sourceHeight > frameHeight) {
+              failures.push(`${where}: sourceHeight ${p.sourceHeight} exceeds frameHeight ${frameHeight}`)
+            }
+            if (p.sourceHeight < 0) {
+              failures.push(`${where}: negative sourceHeight ${p.sourceHeight}`)
+            }
+            if (p.destY < 0) {
+              failures.push(`${where}: negative destY ${p.destY}`)
+            }
+            // drawImage can only read as many rows as the frame bitmap holds.
+            const painted = Math.min(p.sourceHeight, frameHeight)
+            if (p.destY + painted > plan.canvasHeight) {
+              failures.push(
+                `${where}: frame ${p.index} paints to row ${p.destY + painted} past canvasHeight ${plan.canvasHeight}`,
+              )
+            }
+            for (let y = p.destY; y < Math.min(p.destY + painted, plan.canvasHeight); y += 1) {
+              covered[y] = 1
+            }
+          }
+
+          for (let y = 0; y < plan.canvasHeight; y += 1) {
+            if (!covered[y]) {
+              failures.push(`${where}: first uncovered row ${y} of canvasHeight ${plan.canvasHeight}`)
+              break // one report per combination is enough to identify it
+            }
+          }
+        }
+      }
+    }
+
+    expect(checked).toBe(108_304)
+    expect(
+      failures,
+      `${failures.length} failing combination(s):\n${failures.slice(0, 20).join('\n')}`,
+    ).toEqual([])
+  })
 })

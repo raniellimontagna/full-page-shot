@@ -42,10 +42,27 @@ export function planCapture(m: PageMeasurements): CapturePlan {
     steps.push({ index, scrollY: Math.min(index * m.viewportHeight, lastScrollY) })
   }
 
+  // The canvas is painted in whole frames, each exactly `frameHeight` device
+  // pixels tall, so it must never claim more rows than `stepCount` frames can
+  // physically cover. With a fractional devicePixelRatio (1.25, 1.5, 1.75 —
+  // standard Windows and ChromeOS scale factors) the two roundings disagree:
+  // round(scrollHeight * dpr) can be strictly greater than
+  // stepCount * round(viewportHeight * dpr).
+  //
+  // Worked example: dpr 1.25, viewportHeight 753, scrollHeight 1506 gives
+  // frameHeight 941 and round(1506 * 1.25) = 1883, but two frames reach at most
+  // 1882. Row 1882 would be uncoverable by any placement formula, and would
+  // ship as a transparent band or a cropped page bottom.
+  //
+  // Do not "simplify" this back to round(heightCss * dpr): the frame grid in
+  // computeFramePlacements depends on this clamp holding.
+  const frameHeight = Math.round(m.viewportHeight * dpr)
+  const canvasHeight = Math.min(Math.round(heightCss * dpr), stepCount * frameHeight)
+
   return {
     steps,
     canvasWidth,
-    canvasHeight: Math.round(heightCss * dpr),
+    canvasHeight,
     truncated,
   }
 }

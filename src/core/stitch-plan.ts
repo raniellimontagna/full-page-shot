@@ -12,6 +12,32 @@ export interface FramePlacement {
 // frames are wider than the canvas. This module emits no destX/sourceWidth because
 // canvas drawImage clips horizontal overflow at the destination bounds (Task 6).
 
+/**
+ * Lays the captured frames out on the destination canvas.
+ *
+ * Units: `step.scrollY` arrives in CSS pixels (what window.scrollTo takes), while
+ * `destY` and `sourceHeight` are emitted in device pixels (what captureVisibleTab
+ * returns and what the canvas is sized in).
+ *
+ * The grid is deliberately uniform: frame `i` sits at exactly `i * frameHeight`,
+ * never at `round(scrollY * dpr)`. Rounding each position independently is the bug
+ * this replaces. With a fractional devicePixelRatio (1.25, 1.5, 1.75 — standard
+ * Windows and ChromeOS scale factors), independently rounded positions do not advance
+ * by frameHeight per step, so consecutive frames drift apart and leave uncovered
+ * device-pixel rows. Worse, the drift cannot be papered over by widening sourceHeight:
+ * a frame's bitmap is only frameHeight tall, so drawImage clamps sourceHeight back down
+ * to frameHeight and the gap reopens downstream.
+ *
+ * Only the final frame is positioned by subtraction — `canvasHeight - frameHeight` —
+ * so it lands flush with the canvas bottom. That is what absorbs the last capture
+ * step being clamped to the page bottom (planCapture caps the final scrollY at
+ * `heightCss - viewportHeight`, so the last frame overlaps its predecessor and repaints
+ * the shared band with identical pixels).
+ *
+ * This is only sound because planCapture caps canvasHeight at `stepCount * frameHeight`;
+ * the two modules have to stay in step. Do not "simplify" either side back into
+ * independent rounding — see the worked counterexample in page-metrics.ts.
+ */
 export function computeFramePlacements(
   plan: CapturePlan,
   m: PageMeasurements,
@@ -19,23 +45,10 @@ export function computeFramePlacements(
   const dpr = m.devicePixelRatio
   const frameHeight = Math.round(m.viewportHeight * dpr)
 
-  // Clamp each destY against the previous frame's reach. With fractional devicePixelRatio
-  // (1.25, 1.5, 1.75 — common on Windows and ChromeOS), Math.round(scrollY * dpr) does
-  // not advance by frameHeight each step. Independently rounded values can leave gaps
-  // between frames (e.g., frame 1 reaches row 2002, frame 2 starts at row 2003).
-  //
-  // We couple the clamping: each destY is clamped to not exceed prev + frameHeight, so
-  // sourceHeight will naturally fit within frameHeight. This is critical because Task 6's
-  // drawImage will clamp sourceHeight by the actual bitmap.height (which is frameHeight).
-  // If sourceHeight > frameHeight and we cap it downstream, the gap reopens. Preventing
-  // sourceHeight > frameHeight in the first place (via coupled destY clamping) keeps that
-  // clamp from creating gaps: the actual painted height will always be contiguous.
-  const destYs: number[] = []
-  for (const [i, step] of plan.steps.entries()) {
-    const raw = Math.round(step.scrollY * dpr)
-    const prev = destYs[i - 1]
-    destYs.push(prev === undefined ? raw : Math.min(raw, prev + frameHeight))
-  }
+  const last = plan.steps.length - 1
+  const destYs = plan.steps.map((_, i) =>
+    i === last ? Math.max(0, plan.canvasHeight - frameHeight) : i * frameHeight,
+  )
 
   return plan.steps.map((step, i) => {
     const destY = destYs[i] ?? 0
