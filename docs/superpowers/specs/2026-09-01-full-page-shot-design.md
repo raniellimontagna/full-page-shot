@@ -71,12 +71,24 @@ Tudo que precisa tocar a página. Não decide nada — executa comando e respond
 
 ### Offscreen document
 
-Único contexto com DOM completo. É obrigatório para escrever no clipboard no MV3, então
-o canvas vive aqui — evita ter lógica de canvas em dois lugares.
+Único contexto com DOM completo, e por isso o dono do canvas.
 
 - Acumula os frames num `<canvas>`.
 - Gera o blob PNG.
-- Escreve no clipboard via `navigator.clipboard.write`.
+
+> **Correção (1/set/2026, após os testes e2e da Task 9).** A versão original desta seção dizia
+> que o offscreen document era *obrigatório para escrever no clipboard no MV3*. Isso é falso, e
+> os testes em Chromium real provaram: `navigator.clipboard.write()` falha com
+> `NotAllowedError: Document is not focused`, porque um offscreen document nunca pode ter foco —
+> `reasons: [CLIPBOARD]` concede a API, não o foco. Pior: `chrome.downloads` sequer existe nesse
+> contexto. O offscreen document costura a imagem; **entregar é com os outros**.
+
+### Entrega dos sinks
+
+- **Download:** no service worker, que tem `chrome.downloads` de verdade.
+- **Clipboard:** no content script da aba capturada, que é um documento com foco real.
+- Os dois são **independentes**: a falha de um nunca cancela o outro, e o badge reporta sucesso
+  parcial com honestidade.
 
 ### Options page
 
