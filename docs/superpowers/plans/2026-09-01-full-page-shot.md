@@ -506,16 +506,28 @@ export function computeFramePlacements(
   const dpr = m.devicePixelRatio
   const frameHeight = Math.round(m.viewportHeight * dpr)
 
-  // sourceHeight must be derived from where the NEXT frame actually lands, not
-  // from a constant frameHeight. With a fractional devicePixelRatio (1.25, 1.5,
-  // 1.75 — common on Windows and ChromeOS), round(scrollY * dpr) does not
-  // advance by round(viewportHeight * dpr) each step, and the drift leaves
-  // uncovered rows. Verified case: dpr 1.25, viewportHeight 801, scrollHeight
-  // 2500 leaves device row 2002 drawn by no frame at all.
+  // With a fractional devicePixelRatio (1.25, 1.5, 1.75 — the common Windows
+  // and ChromeOS scale factors), round(scrollY * dpr) does not advance by
+  // round(viewportHeight * dpr) each step. Rounding each destY independently
+  // lets the drift open a gap no frame draws: at dpr 1.25, viewportHeight 801,
+  // scrollHeight 2500, device row 2002 falls between frame 1's reach (2001)
+  // and frame 2's independently-rounded start (2003).
+  //
+  // Capping sourceHeight does NOT fix this — the gap is between one frame's
+  // reach and the next frame's position, so the two must be coupled: each
+  // destY is pulled back to at most the previous frame's last drawable row.
+  // That also keeps every sourceHeight <= frameHeight, so a consumer clamping
+  // the draw call to the bitmap's real height can never reopen the gap.
+  const destYs: number[] = []
+  for (const [i, step] of plan.steps.entries()) {
+    const raw = Math.round(step.scrollY * dpr)
+    const prev = destYs[i - 1]
+    destYs.push(prev === undefined ? raw : Math.min(raw, prev + frameHeight))
+  }
+
   return plan.steps.map((step, i) => {
-    const destY = Math.round(step.scrollY * dpr)
-    const next = plan.steps[i + 1]
-    const nextDestY = next ? Math.round(next.scrollY * dpr) : plan.canvasHeight
+    const destY = destYs[i] ?? 0
+    const nextDestY = destYs[i + 1] ?? plan.canvasHeight
     const span = Math.min(nextDestY, plan.canvasHeight) - destY
     const sourceHeight = Math.max(0, Math.min(frameHeight, span))
     return { index: step.index, destY, sourceHeight }
