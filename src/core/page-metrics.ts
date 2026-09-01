@@ -15,13 +15,19 @@ export function planCapture(m: PageMeasurements): CapturePlan {
   let heightCss = m.scrollHeight
   let truncated = false
 
-  // Derive the height ceiling from the *rounded* canvas width, not the raw
-  // CSS width: rounding up a fractional width would otherwise push the final
-  // area back over the limit.
-  const canvasWidth = Math.round(widthCss * dpr)
+  // Clamp canvas width to maxDimension; a narrowed capture is a truncated one.
+  let canvasWidth = Math.round(widthCss * dpr)
+  if (canvasWidth > CANVAS_LIMITS.maxDimension) {
+    canvasWidth = CANVAS_LIMITS.maxDimension
+    truncated = true
+  }
+
+  // Derive the height ceiling from the *clamped* canvas width, not the raw
+  // CSS width or unclamped device-pixel width: this ensures the area guard
+  // is computed against a width the canvas will actually have.
   const maxHeightByDimension = CANVAS_LIMITS.maxDimension / dpr
   const maxHeightByArea = CANVAS_LIMITS.maxArea / (canvasWidth * dpr)
-  const maxHeightCss = Math.floor(Math.min(maxHeightByDimension, maxHeightByArea))
+  const maxHeightCss = Math.max(1, Math.floor(Math.min(maxHeightByDimension, maxHeightByArea)))
 
   if (heightCss > maxHeightCss) {
     heightCss = maxHeightCss

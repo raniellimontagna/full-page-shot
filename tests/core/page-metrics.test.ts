@@ -59,4 +59,32 @@ describe('planCapture', () => {
     const maxScroll = Math.max(...plan.steps.map((s) => s.scrollY))
     expect(maxScroll).toBeLessThanOrEqual(plan.canvasHeight / base.devicePixelRatio)
   })
+
+  it('clamps canvasWidth to maxDimension and truncates', () => {
+    const tooWide = CANVAS_LIMITS.maxDimension + 1000
+    const plan = planCapture({
+      ...base,
+      viewportWidth: tooWide,
+      scrollHeight: 2000,
+      devicePixelRatio: 1,
+    })
+    expect(plan.canvasWidth).toBe(CANVAS_LIMITS.maxDimension)
+    expect(plan.truncated).toBe(true)
+    expect(plan.steps.length).toBeGreaterThan(0)
+  })
+
+  it('ensures positive canvasHeight with extreme devicePixelRatio', () => {
+    // With pathologically high DPR, the Math.max(1, ...) floor on maxHeightCss
+    // ensures canvasHeight > 0, preventing blank-canvas output.
+    const plan = planCapture({
+      ...base,
+      viewportWidth: 50000,
+      scrollHeight: 100000,
+      devicePixelRatio: 4000,
+    })
+    expect(plan.canvasHeight).toBeGreaterThan(0)
+    expect(plan.canvasWidth).toBeLessThanOrEqual(CANVAS_LIMITS.maxDimension)
+    expect(plan.steps.length).toBeGreaterThan(0)
+    expect(plan.truncated).toBe(true)
+  })
 })
