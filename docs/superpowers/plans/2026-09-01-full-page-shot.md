@@ -85,13 +85,10 @@ export default defineManifest({
   description: 'Capture the entire scrollable page in one click.',
   minimum_chrome_version: '116',
   permissions: ['activeTab', 'scripting', 'offscreen', 'downloads', 'clipboardWrite', 'storage'],
-  // CRXJS only bundles files it can discover through manifest fields. The content
-  // script is injected on demand, never declared under `content_scripts`, so this
-  // is what makes CRXJS emit it at all — and it rewrites the entry to the real
-  // hashed output path, which the service worker reads back at runtime.
-  web_accessible_resources: [
-    { resources: ['src/content/index.ts'], matches: ['<all_urls>'] },
-  ],
+  // NOTE: do NOT list the content script under `web_accessible_resources` here.
+  // CRXJS copies WAR entries verbatim, so that emits raw uncompiled TypeScript.
+  // The content script is instead registered by importing it in the service
+  // worker with the `?script&iife` suffix — see src/background/index.ts.
   action: {
     default_title: 'Capture full page',
     default_icon: {
@@ -1234,13 +1231,27 @@ describe('runCapture', () => {
     expect(deps.captureVisibleTab).toHaveBeenCalledTimes(3)
   })
 
-  it('shows fixed elements on the first frame and hides them afterwards', async () => {
-    const { deps, contentCalls } = makeDeps()
+  it('captures frame 0 with fixed elements still visible, then hides them', async () => {
+    // Ordering matters and a weaker assertion missed a real bug: the header must
+    // still be on screen when frame 0 is captured, and gone for every frame after.
+    const timeline: string[] = []
+    const { deps } = makeDeps({
+      sendToContent: vi.fn(async (_tabId: number, request: ContentRequest) => {
+        timeline.push(request.type)
+        return request.type === 'measure'
+          ? { ok: true as const, measurements }
+          : { ok: true as const }
+      }),
+      captureVisibleTab: vi.fn(async () => {
+        timeline.push('capture')
+        return 'data:image/png;base64,AAAA'
+      }),
+    })
+
     await runCapture(1, deps)
-    const order = contentCalls.map((c) => c.type)
-    const firstScroll = order.indexOf('scrollTo')
-    const hide = order.indexOf('hideFixed')
-    expect(hide).toBeGreaterThan(firstScroll)
+
+    expect(timeline.indexOf('hideFixed')).toBeGreaterThan(timeline.indexOf('capture'))
+    expect(timeline.filter((t) => t === 'hideFixed')).toHaveLength(1)
   })
 
   it('streams each frame instead of batching them', async () => {
@@ -1355,8 +1366,10 @@ export async function runCapture(tabId: number, deps: CaptureDeps): Promise<void
 
       unwrap(await deps.sendToContent(tabId, { type: 'scrollTo', y: step.scrollY }))
 
-      // Fixed headers belong in the first frame and nowhere else.
-      if (i === 0) unwrap(await deps.sendToContent(tabId, { type: 'hideFixed' }))
+      // Fixed headers belong in frame 0 and nowhere else. Hide them from frame 1
+      // onward — hiding at i === 0 would strip the header from the whole image,
+      // which is the opposite of the intent.
+      if (i === 1) unwrap(await deps.sendToContent(tabId, { type: 'hideFixed' }))
 
       if (i > 0) await deps.delay(CAPTURE_INTERVAL_MS)
 
