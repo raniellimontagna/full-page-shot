@@ -40,18 +40,26 @@ function unwrap(response: ContentResponse | OffscreenResponse): void {
 }
 
 export async function runCapture(tabId: number, deps: CaptureDeps): Promise<CaptureOutcome> {
-  const measured = await deps.sendToContent(tabId, { type: 'measure' })
-  if (!measured.ok) throw new Error(measured.error)
-  const measurements = measured.measurements
-  if (!measurements) throw new Error('page measurement failed')
-
-  const plan = planCapture(measurements)
-  const placements = computeFramePlacements(plan, measurements)
-
-  await deps.ensureOffscreen()
   let began = false
 
+  // Everything from `measure` onward sits inside the try. `measure` latches
+  // the user's original scroll position in the content script, so from that
+  // call on the page is mid-capture and something must send `restore` -- and
+  // planCapture, computeFramePlacements and ensureOffscreen can all throw
+  // (a canvas-limit violation, a cross-module contract breach, a failed
+  // offscreen creation). Outside the try those escaped with the page left
+  // latched and no restore ever sent.
   try {
+    const measured = await deps.sendToContent(tabId, { type: 'measure' })
+    if (!measured.ok) throw new Error(measured.error)
+    const measurements = measured.measurements
+    if (!measurements) throw new Error('page measurement failed')
+
+    const plan = planCapture(measurements)
+    const placements = computeFramePlacements(plan, measurements)
+
+    await deps.ensureOffscreen()
+
     unwrap(
       await deps.sendToOffscreen({
         type: 'beginCapture',

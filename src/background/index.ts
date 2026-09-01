@@ -124,15 +124,29 @@ async function waitForDownloadsToDrain(): Promise<boolean> {
   }
 }
 
+/**
+ * Never throws. `setBadgeText`/`setBadgeBackgroundColor` reject if the tab has
+ * closed, which is entirely possible mid-capture -- and this is called from
+ * the failure path, where an escaping rejection would skip the offscreen
+ * cleanup that follows it and leak the document (plus an unhandled rejection).
+ * A badge is cosmetic; it must never be able to take down cleanup.
+ */
 async function setBadge(tabId: number, text: string, color: string): Promise<void> {
-  await chrome.action.setBadgeBackgroundColor({ tabId, color })
-  await chrome.action.setBadgeText({ tabId, text })
+  try {
+    await chrome.action.setBadgeBackgroundColor({ tabId, color })
+    await chrome.action.setBadgeText({ tabId, text })
+  } catch {
+    return
+  }
   setTimeout(() => void chrome.action.setBadgeText({ tabId, text: '' }).catch(() => {}), 3000)
 }
 
 chrome.action.onClicked.addListener((tab) => {
   void (async () => {
     const tabId = tab.id
+    // Captured at click time. Every later window-scoped call is pinned to this
+    // window rather than to whatever "current" means later on.
+    const windowId = tab.windowId
     const url = tab.url
     if (tabId === undefined) return
     if (!isCapturableUrl(url)) {
@@ -140,6 +154,7 @@ chrome.action.onClicked.addListener((tab) => {
       return
     }
 
+    let downloadPending = false
     try {
       await chrome.scripting.executeScript({
         target: { tabId },
@@ -151,29 +166,38 @@ chrome.action.onClicked.addListener((tab) => {
           chrome.tabs.sendMessage(id, request) as Promise<ContentResponse>,
         sendToOffscreen: (request: OffscreenRequest) =>
           chrome.runtime.sendMessage(request) as Promise<OffscreenResponse>,
-        captureVisibleTab: () => chrome.tabs.captureVisibleTab({ format: 'png' }),
+        // Pinned to the captured window. Called without a windowId this grabs
+        // the *last focused* window, so merely focusing a second window would
+        // start splicing that window's tab into the screenshot.
+        captureVisibleTab: () => chrome.tabs.captureVisibleTab(windowId, { format: 'png' }),
         ensureOffscreen,
-        isTabStillActive: async () => {
-          const [active] = await chrome.tabs.query({ active: true, currentWindow: true })
-          return active?.id === tabId
-        },
+        // Asks the tab about itself rather than asking which tab is "current".
+        // `chrome.tabs.query({ active: true, currentWindow: true })` resolves
+        // "current window" to the last focused one when called from a service
+        // worker, so focusing any other window aborted a perfectly valid
+        // capture. This and the windowId above are one fix: the old abort was
+        // load-bearing precisely because captureVisibleTab was unpinned, so
+        // removing the false aborts without pinning the capture would have
+        // traded a nuisance for a wrong screenshot.
+        isTabStillActive: async () => (await chrome.tabs.get(tabId)).active,
         prefs: await loadPrefs(),
         filename: buildFilename(new Date(), new URL(url).hostname),
         delay,
       })
 
+      downloadPending = outcome.downloadPending
       await setBadge(tabId, '✓', '#1e8e3e')
-      // Deliberately after the badge: the user has their result, and this may
-      // block for up to DOWNLOAD_DRAIN_TIMEOUT_MS waiting on a slow write.
-      await releaseOffscreen(outcome.downloadPending)
     } catch (error) {
       console.error('[full-page-shot]', error)
       await setBadge(tabId, '✕', '#b3261e')
-      // Nothing was delivered on this path -- `runCapture` only ever throws
-      // before `finishCapture` succeeds, and a download that failed outright
-      // rejects rather than resolving -- so there is no blob URL left to
-      // protect and the document can go.
-      await releaseOffscreen(false)
+      // `downloadPending` stays false: `runCapture` only throws before
+      // `finishCapture` succeeds, and a download that failed outright rejects
+      // rather than resolving, so there is no live blob URL to protect.
+    } finally {
+      // In `finally` so no failure between here and the badge can skip it and
+      // strand the offscreen document. Deliberately after the badge: the user
+      // has their result, and this may block waiting on a slow write.
+      await releaseOffscreen(downloadPending)
     }
   })()
 })

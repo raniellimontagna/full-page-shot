@@ -17,18 +17,29 @@ const measurements: PageMeasurements = {
 function makeDeps(overrides: Partial<CaptureDeps> = {}) {
   const contentCalls: ContentRequest[] = []
   const offscreenCalls: string[] = []
+  // A single ordered log across ALL three channels. Per-channel logs cannot
+  // express "the header was still visible when frame 0 was taken", because
+  // that claim is about where `hideFixed` sits relative to a *capture* — and
+  // a content-only log makes any position after the first `scrollTo` look
+  // correct, including hiding before a single frame exists.
+  const events: string[] = []
   const deps: CaptureDeps = {
     sendToContent: vi.fn(async (_tabId: number, request: ContentRequest) => {
       contentCalls.push(request)
+      events.push(`content:${request.type}`)
       return request.type === 'measure'
         ? { ok: true as const, measurements }
         : { ok: true as const }
     }),
     sendToOffscreen: vi.fn(async (request: OffscreenRequest) => {
       offscreenCalls.push(request.type)
+      events.push(`offscreen:${request.type}`)
       return { ok: true as const, downloadPending: false }
     }),
-    captureVisibleTab: vi.fn(async () => 'data:image/png;base64,AAAA'),
+    captureVisibleTab: vi.fn(async () => {
+      events.push('capture')
+      return 'data:image/png;base64,AAAA'
+    }),
     ensureOffscreen: vi.fn(async () => {}),
     isTabStillActive: vi.fn(async () => true),
     prefs: { toClipboard: true, toDownload: true },
@@ -36,7 +47,7 @@ function makeDeps(overrides: Partial<CaptureDeps> = {}) {
     delay: vi.fn(async () => {}),
     ...overrides,
   }
-  return { deps, contentCalls, offscreenCalls }
+  return { deps, contentCalls, offscreenCalls, events }
 }
 
 describe('runCapture', () => {
@@ -47,12 +58,22 @@ describe('runCapture', () => {
   })
 
   it('shows fixed elements on the first frame and hides them afterwards', async () => {
-    const { deps, contentCalls } = makeDeps()
+    const { deps, events } = makeDeps()
     await runCapture(1, deps)
-    const order = contentCalls.map((c) => c.type)
-    const firstScroll = order.indexOf('scrollTo')
-    const hide = order.indexOf('hideFixed')
-    expect(hide).toBeGreaterThan(firstScroll)
+
+    // Hiding must land strictly between the first and second captures.
+    // Earlier strips the header from the whole screenshot; later (or never)
+    // repeats it down the page.
+    const hides = events.filter((event) => event === 'content:hideFixed')
+    expect(hides).toHaveLength(1)
+
+    const captures = events.reduce<number[]>(
+      (acc, event, i) => (event === 'capture' ? [...acc, i] : acc),
+      [],
+    )
+    const hide = events.indexOf('content:hideFixed')
+    expect(hide).toBeGreaterThan(captures[0] ?? -1)
+    expect(hide).toBeLessThan(captures[1] ?? -1)
   })
 
   it('streams each frame instead of batching them', async () => {

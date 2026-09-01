@@ -2,9 +2,64 @@ import type { ContentRequest, ContentResponse } from '../shared/messages'
 import { hideFixedElements, restoreFixedElements } from './fixed-elements'
 import { measurePage, scrollToStep } from './scroll-driver'
 
+/**
+ * How long the page waits for the next capture command before restoring
+ * itself unprompted.
+ *
+ * The orchestrator restores the page in a `finally`, but an MV3 service
+ * worker can be evicted mid-capture, and an evicted worker runs no `finally`
+ * — leaving the user's page scrolled with its header hidden, with nothing
+ * left alive to put it back. The spec rule that a failed capture never alters
+ * the page is absolute, so the guarantee has to live page-side, where it
+ * cannot be killed.
+ *
+ * Sized well above the orchestrator's `CAPTURE_INTERVAL_MS` (550ms) plus the
+ * scroll settle, so a healthy capture re-arms this long before it fires.
+ */
+export const RESTORE_WATCHDOG_MS = 10_000
+
 let originalScrollY: number | null = null
+let watchdog: ReturnType<typeof setTimeout> | null = null
+
+function restorePage(): void {
+  restoreFixedElements(document)
+  if (originalScrollY !== null) {
+    window.scrollTo({ top: originalScrollY, left: 0, behavior: 'instant' as ScrollBehavior })
+    originalScrollY = null
+  }
+}
+
+function clearWatchdog(): void {
+  if (watchdog !== null) {
+    clearTimeout(watchdog)
+    watchdog = null
+  }
+}
+
+/**
+ * Re-armed by every command, so the timer only ever measures *silence*.
+ * Arming once at the start of a capture instead would fire mid-capture on a
+ * slow page and un-hide the header while frames were still being taken —
+ * turning a watchdog into a corruption source.
+ */
+function armWatchdog(): void {
+  clearWatchdog()
+  watchdog = setTimeout(() => {
+    watchdog = null
+    restorePage()
+  }, RESTORE_WATCHDOG_MS)
+}
 
 async function handle(request: ContentRequest): Promise<ContentResponse> {
+  // `restore` ends the capture, so it disarms rather than re-arms.
+  if (request.type === 'restore') {
+    clearWatchdog()
+    restorePage()
+    return { ok: true }
+  }
+
+  armWatchdog()
+
   switch (request.type) {
     case 'measure': {
       const measurements = measurePage(window)
@@ -14,7 +69,8 @@ async function handle(request: ContentRequest): Promise<ContentResponse> {
       // would make `restore` land on the scrolled position instead of
       // where the user actually started — a real page alteration the spec
       // forbids. Each `measure` still returns fresh measurements; only the
-      // remembered original position is sticky, and only `restore` clears it.
+      // remembered original position is sticky, and only `restore` (or the
+      // watchdog) clears it.
       if (originalScrollY === null) {
         originalScrollY = measurements.scrollY
       }
@@ -26,21 +82,38 @@ async function handle(request: ContentRequest): Promise<ContentResponse> {
     case 'scrollTo':
       await scrollToStep(window, request.y)
       return { ok: true }
-    case 'restore':
-      restoreFixedElements(document)
-      if (originalScrollY !== null) {
-        window.scrollTo({ top: originalScrollY, left: 0, behavior: 'instant' as ScrollBehavior })
-        originalScrollY = null
-      }
-      return { ok: true }
   }
 }
 
-chrome.runtime.onMessage.addListener((request: ContentRequest, _sender, sendResponse) => {
-  handle(request)
-    .then(sendResponse)
-    .catch((error: unknown) => {
-      sendResponse({ ok: false, error: String(error) } satisfies ContentResponse)
-    })
-  return true
-})
+/**
+ * Guards against duplicate registration. `chrome.scripting.executeScript`
+ * re-runs this file on every capture, and the extension's isolated world
+ * persists for the life of the page — so a second capture on the same page
+ * would register a second listener, and both would answer every message:
+ * duplicate `sendResponse`, duplicate `scrollTo`/`restore`, each with its own
+ * latched `originalScrollY`. That only appears to work because `restore` is
+ * idempotent and whichever listener scrolls last happens to win; correctness
+ * by registration order is not correctness.
+ *
+ * On re-injection the new module instance simply does nothing — the original
+ * instance keeps serving, with the state it already holds. That is safe
+ * because `restore` (and the watchdog) clear that state at the end of every
+ * capture, so the surviving instance is always clean when the next one starts.
+ */
+interface InjectionScope {
+  __fullPageShotListenerInstalled?: true
+}
+const scope = globalThis as typeof globalThis & InjectionScope
+
+if (scope.__fullPageShotListenerInstalled !== true) {
+  scope.__fullPageShotListenerInstalled = true
+
+  chrome.runtime.onMessage.addListener((request: ContentRequest, _sender, sendResponse) => {
+    handle(request)
+      .then(sendResponse)
+      .catch((error: unknown) => {
+        sendResponse({ ok: false, error: String(error) } satisfies ContentResponse)
+      })
+    return true
+  })
+}
