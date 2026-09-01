@@ -25,24 +25,38 @@ export const DOWNLOAD_COMPLETION_TIMEOUT_MS = 120_000
  */
 export const DOWNLOAD_TIMEOUT_FALLBACK_REVOKE_MS = 10 * 60_000
 
-type DownloadWaitOutcome = 'complete' | 'timeout'
+/**
+ * How `downloadBlob` left the download, accounting for all three ways it
+ * can end:
+ *
+ *   - `'complete'`: the download reached Chrome's terminal "finished"
+ *     state before this function returned. The file is genuinely written.
+ *     Safe for the caller to close the offscreen document immediately.
+ *   - `'timeout'`: this function gave up *watching* the download after
+ *     `DOWNLOAD_COMPLETION_TIMEOUT_MS`. The download itself is most likely
+ *     still writing. The caller must NOT close the offscreen document yet.
+ *   - Interrupted downloads are not part of this type at all: `downloadBlob`
+ *     *rejects* with an `Error` in that case instead of resolving, since an
+ *     interrupted download is genuinely over (and failed).
+ *
+ * Resolving does not, by itself, mean the download finished — only the
+ * resolved value does. Putting that in the type is deliberate: a comment
+ * saying "this always means the download is done" would go stale exactly
+ * on the branch that matters (see git history on this function for why).
+ */
+export type DownloadOutcome = 'complete' | 'timeout'
 
 /**
- * Delivers `blob` as a downloaded file.
- *
- * Lifetime contract: this function does not resolve until the download is
- * genuinely finished (or we have deliberately given up waiting on it — see
- * the timeout branch below). That is what lets the caller safely call
- * `chrome.offscreen.closeDocument()` the moment this resolves:
- * `chrome.downloads.download()` itself only resolves once the download is
- * *queued*, not once Chrome has finished reading the blob, and closing
- * this document destroys the JS realm — and its blob-URL registry — out
- * from under an in-flight download exactly like a premature
- * `revokeObjectURL` would. Do not "simplify" this into a bare
- * `chrome.downloads.download()` call without the wait — that reintroduces
- * the corruption this function exists to prevent.
+ * Delivers `blob` as a downloaded file. See `DownloadOutcome` for what the
+ * resolved value means and, in particular, when it is safe to close the
+ * offscreen document afterwards — it is NOT simply "whenever this promise
+ * resolves". Do not "simplify" this into a bare `chrome.downloads.download()`
+ * call without the completion wait: `chrome.downloads.download()` itself
+ * only resolves once the download is *queued*, not once Chrome has
+ * finished reading the blob, and that gap is exactly what this function
+ * exists to close.
  */
-export async function downloadBlob(blob: Blob, filename: string): Promise<void> {
+export async function downloadBlob(blob: Blob, filename: string): Promise<DownloadOutcome> {
   const url = URL.createObjectURL(blob)
   let downloadId: number
   try {
@@ -53,7 +67,7 @@ export async function downloadBlob(blob: Blob, filename: string): Promise<void> 
     throw error
   }
 
-  let outcome: DownloadWaitOutcome
+  let outcome: DownloadOutcome
   try {
     outcome = await waitForDownloadCompletion(downloadId)
   } catch (error) {
@@ -85,14 +99,15 @@ export async function downloadBlob(blob: Blob, filename: string): Promise<void> 
         `writing, so treating this capture as delivered and revoking its object URL later`,
     )
     setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_TIMEOUT_FALLBACK_REVOKE_MS)
-    return
+    return 'timeout'
   }
 
   // outcome === 'complete' — the download is genuinely over, safe to revoke now.
   URL.revokeObjectURL(url)
+  return 'complete'
 }
 
-function waitForDownloadCompletion(downloadId: number): Promise<DownloadWaitOutcome> {
+function waitForDownloadCompletion(downloadId: number): Promise<DownloadOutcome> {
   return new Promise((resolve, reject) => {
     let settled = false
 

@@ -11,25 +11,32 @@ async function handle(request: OffscreenRequest): Promise<OffscreenResponse> {
   switch (request.type) {
     case 'beginCapture':
       stitcher = new Stitcher(request.width, request.height)
-      return { ok: true }
+      return { ok: true, downloadPending: false }
     case 'addFrame':
       if (!stitcher) return { ok: false, error: 'no capture in progress' }
       await stitcher.addFrame(request.dataUrl, request.destY, request.sourceHeight)
-      return { ok: true }
+      return { ok: true, downloadPending: false }
     case 'finishCapture': {
       if (!stitcher) return { ok: false, error: 'no capture in progress' }
       try {
         const blob = await stitcher.toBlob()
         if (request.toClipboard) await copyToClipboard(blob)
-        if (request.toDownload) await downloadBlob(blob, request.filename)
-        return { ok: true }
+        // `downloadPending` carries whether the download had genuinely
+        // finished by the time this response is sent. The caller (the
+        // service worker) must not close this offscreen document while
+        // `downloadPending` is true — see `DownloadOutcome` in
+        // `./sinks.ts` for why resolution alone never implies "finished".
+        const downloadPending = request.toDownload
+          ? (await downloadBlob(blob, request.filename)) === 'timeout'
+          : false
+        return { ok: true, downloadPending }
       } finally {
         stitcher = null
       }
     }
     case 'abortCapture':
       stitcher = null
-      return { ok: true }
+      return { ok: true, downloadPending: false }
     default:
       // `handle` is only ever exhaustive against the declared
       // `OffscreenRequest` union, and `noImplicitReturns` is off. A message
