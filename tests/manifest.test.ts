@@ -64,19 +64,32 @@ describe('manifest', () => {
     })
   })
 
-  // The third mode gets the third shortcut. Ctrl+Shift+I / Cmd+Shift+I is not
-  // an extension command in stock Chrome (DevTools binds it at the browser
-  // level, and Chrome refuses to hand a browser-level accelerator to an
-  // extension only for reserved chords, which this is not); if another
-  // extension claimed it first Chrome leaves it unbound rather than stealing
-  // it, and the user can rebind at chrome://extensions/shortcuts.
+  // The third mode gets the third shortcut. NOT Ctrl+Shift+I: that is Chrome's
+  // own DevTools binding, and a browser-level binding beats an extension
+  // command outright -- the command would simply never fire, with nothing
+  // anywhere reporting a problem. Ctrl+Shift+S / Cmd+Shift+S is unassigned in
+  // stock Chrome; if another extension claimed it first Chrome leaves it
+  // unbound rather than stealing it, and the user can rebind at
+  // chrome://extensions/shortcuts.
   it('binds a third shortcut to area selection', () => {
     const command = manifest.commands?.['capture-selection']
     expect(command).toBeDefined()
     expect(command?.suggested_key).toEqual({
-      default: 'Ctrl+Shift+I',
-      mac: 'Command+Shift+I',
+      default: 'Ctrl+Shift+S',
+      mac: 'Command+Shift+S',
     })
+  })
+
+  // Chrome hands a chord to an extension only if it has not claimed it itself,
+  // and it never says so: the command is accepted, listed at
+  // chrome://extensions/shortcuts, and inert. Ctrl+Shift+I is the one this
+  // extension actually reached for and had to give up.
+  it('claims no chord Chrome has reserved for itself', () => {
+    const chords = Object.values(manifest.commands ?? {}).flatMap((command) =>
+      Object.values(command.suggested_key ?? {}),
+    )
+    expect(chords).not.toContain('Ctrl+Shift+I')
+    expect(chords).not.toContain('Command+Shift+I')
   })
 
   // Three modes, three commands -- and still the same seven permissions. The

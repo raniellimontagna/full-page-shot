@@ -8,7 +8,14 @@ import type { ContentRequest, ContentResponse, CssRect, OffscreenRequest } from 
 const FRAME = 'data:image/png;base64,FRAME'
 const CLIPBOARD = 'data:image/png;base64,CLIPBOARD'
 const DOWNLOAD = 'data:image/jpeg;base64,DOWNLOAD'
-const RECT: CssRect = { x: 100, y: 40, width: 300, height: 200 }
+/**
+ * Deliberately fractional. The rect travels in CSS pixels and the offscreen
+ * document owns the CSS→device conversion, because it is the only place that
+ * knows both the ratio and the captured frame's real dimensions. An integer
+ * fixture would let a `Math.round` sneak into the worker unnoticed -- a no-op
+ * on whole numbers, and a silently mis-cropped screenshot at dpr 1.5.
+ */
+const RECT: CssRect = { x: 100.4, y: 40.6, width: 300.2, height: 200.8 }
 
 function makeDeps(overrides: Partial<SelectionCaptureDeps> = {}) {
   const offscreenCalls: OffscreenRequest[] = []

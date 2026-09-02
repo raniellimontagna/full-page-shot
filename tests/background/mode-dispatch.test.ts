@@ -42,13 +42,42 @@ describe('mode dispatch', () => {
     for (const command of custom) expect(modeById.has(command)).toBe(true)
   })
 
-  // The toolbar click names no mode and must keep taking the user's default
-  // (`resolveCaptureMode(undefined, prefs)`); only the menu items and the two
-  // custom shortcuts override it. A `_execute_action` entry in the table would
-  // never fire anyway -- Chrome routes it to `action.onClicked` -- but its
-  // presence would mean someone had wired the default click to a fixed mode.
-  it('leaves the default-mode entry point out of the table', () => {
-    expect(modeById.has('_execute_action')).toBe(false)
+  // The toolbar click, and its `_execute_action` shortcut, must keep taking the
+  // user's default: `captureTab(tab)` with no mode, which is what makes
+  // `resolveCaptureMode(undefined, prefs)` fall through to the preference. Pass
+  // a mode here and the options page's capture-mode setting silently stops
+  // meaning anything for the one entry point most users ever touch -- and every
+  // test in this suite would still pass, because all three modes work.
+  it('leaves the toolbar click on the user default', () => {
+    const listener =
+      /chrome\.action\.onClicked\.addListener\(\(tab\) => \{([\s\S]*?)\n\}\)/.exec(
+        backgroundSource,
+      )?.[1] ?? ''
+    expect(listener).toContain('captureTab(tab)')
+    expect(listener).not.toMatch(/captureTab\(tab,/)
+  })
+
+  // The cancel branch of `runOneCapture`. `badgeForCancelledCapture` is proven
+  // neutral by the sinks suite, but nothing else proves the worker *calls* it:
+  // swap it for `BADGE_FAILURE` and every other test in the project still
+  // passes while every cancelled selection shows a red ✕ -- the one thing the
+  // "cancel is not failure" rule forbids.
+  it('badges a cancelled selection as neutral, never as a failure', () => {
+    const branch =
+      /if \(outcome\.status === 'cancelled'\) \{([\s\S]*?)\n {6}\}/.exec(backgroundSource)?.[1] ??
+      ''
+    expect(branch).toContain('badgeForCancelledCapture()')
+    expect(branch).not.toContain('BADGE_FAILURE')
+    // And it leaves: a cancel delivers nothing, so it must not fall through to
+    // the filename, the sinks and the delivery badge below it.
+    expect(branch).toMatch(/\breturn\b/)
+  })
+
+  it('returns from a cancelled selection before anything is delivered', () => {
+    const cancelAt = backgroundSource.indexOf("outcome.status === 'cancelled'")
+    const deliverAt = backgroundSource.indexOf('await deliverImages(')
+    expect(cancelAt).toBeGreaterThan(-1)
+    expect(deliverAt).toBeGreaterThan(cancelAt)
   })
 
   it('offers area selection as a third item on the action menu', () => {
