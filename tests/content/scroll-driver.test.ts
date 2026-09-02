@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { FRAME_TIMEOUT_MS } from '../../src/content/next-frame'
 import { SETTLE_DELAY_MS, measurePage, scrollToStep } from '../../src/content/scroll-driver'
 
 const FRAME_DELAY_MS = 16
@@ -131,6 +132,41 @@ describe('scrollToStep', () => {
 
     await vi.advanceTimersByTimeAsync(1)
     expect(order).toEqual(['scroll', 'frame', 'frame', 'settle'])
+    expect(resolved).toBe(true)
+  })
+
+  // Deferred follow-up: `FRAME_TIMEOUT_MS` bounds `scrollToStep` too, since
+  // each of its two `nextFrame` calls falls back to it independently -- but
+  // until now that bound was only proven at the `nextFrame` helper level, not
+  // through `scrollToStep` itself. A hidden tab never services
+  // `requestAnimationFrame` at all (see `next-frame.test.ts`), so this must
+  // still resolve rather than hang forever inside the content script's
+  // `finally` -- and it must take exactly `2 × FRAME_TIMEOUT_MS +
+  // SETTLE_DELAY_MS`, not more (both frame timeouts) and not less (the settle
+  // delay still applies once they have).
+  it('resolves via both frame timeouts instead of hanging when requestAnimationFrame never fires', async () => {
+    vi.useFakeTimers()
+
+    const win = {
+      scrollTo: () => {},
+      // Never invokes its callback -- the hidden-tab case each `nextFrame`
+      // call's own timeout exists for.
+      requestAnimationFrame: () => 1,
+      setTimeout: ((cb: () => void, ms?: number) =>
+        setTimeout(cb, ms) as unknown as number) as Window['setTimeout'],
+      clearTimeout: ((id: number) => clearTimeout(id)) as unknown as Window['clearTimeout'],
+    } as unknown as Window
+
+    let resolved = false
+    void scrollToStep(win, 100).then(() => {
+      resolved = true
+    })
+
+    const total = FRAME_TIMEOUT_MS * 2 + SETTLE_DELAY_MS
+    await vi.advanceTimersByTimeAsync(total - 1)
+    expect(resolved).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(1)
     expect(resolved).toBe(true)
   })
 

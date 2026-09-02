@@ -78,6 +78,14 @@ describe('mode dispatch', () => {
     const deliverAt = backgroundSource.indexOf('await deliverImages(')
     expect(cancelAt).toBeGreaterThan(-1)
     expect(deliverAt).toBeGreaterThan(cancelAt)
+
+    // Position alone proves nothing: this would still pass with no `return`
+    // anywhere in the file, or with one sitting outside the cancelled branch
+    // entirely -- either way the cancel would silently fall through into
+    // delivery. A `return` must actually appear in the stretch between the
+    // two, not merely somewhere before `deliverImages`.
+    const between = backgroundSource.slice(cancelAt, deliverAt)
+    expect(between).toMatch(/\breturn\b/)
   })
 
   it('offers area selection as a third item on the action menu', () => {

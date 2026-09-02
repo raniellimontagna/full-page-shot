@@ -391,3 +391,71 @@ test('scale and format still apply to a selection', async () => {
   expect(delivered.bytes.subarray(0, 2).toString('hex')).toBe('ffd8')
   await page.close()
 })
+
+/**
+ * The suite above runs entirely at the host's own dpr (1 on ordinary CI
+ * runners), so the default `scale: 1` never actually resamples anything --
+ * `planEncode` divides device pixels back down by the same 1:1 ratio it
+ * multiplied by. At `deviceScaleFactor: 2`, `scale: 1` is a genuine 2x → 1x
+ * downscale, which is exactly where adjacent source rows can blend at a
+ * boundary: if the resample kernel ever pulled in a neighbouring band, or the
+ * crop's device-pixel edges landed a row off from where `planCrop` intended,
+ * the flat `#cccccc`/`#eeeeee` bands below would stop being flat. A separate
+ * harness is used (rather than parametrising the suite above) because
+ * `--force-device-scale-factor` is a launch-time Chromium flag.
+ */
+test.describe('at device scale factor 2', () => {
+  test('a dragged region survives the 1x downscale as exact, unblended bands', async () => {
+    const harness2 = await launchExtension({ deviceScaleFactor: 2 })
+    try {
+      const context2 = harness2.context
+      // The decoder is just a blank page that decodes bytes via canvas -- it
+      // has no dependency on the extension, so the outer one (from the dpr-1
+      // harness in `beforeAll`) works fine here too.
+      await setPrefs(context2, {
+        toClipboard: true,
+        toDownload: false,
+        scale: 1,
+        downloadFormat: 'png',
+      })
+      const page = await openFixture(context2, 'long-fixed-header.html')
+      await page.evaluate(() => window.scrollTo(0, 0))
+      const facts = await readPageFacts(page)
+      expect(facts.devicePixelRatio).toBe(2)
+
+      await startCapture(context2, page, 'selection')
+      await waitForOverlay(page)
+      await drag(page, FROM, TO)
+      const probe = await settleCapture(context2)
+
+      expect(probe.error).toBeNull()
+      expect(probe.badge).toBe('✓')
+      const bytes = dataUrlToBuffer(probe.clipboardDataUrl ?? '')
+
+      // The delivered size is still the CSS-pixel selection: `scale: 1`
+      // downscales the 2x-captured crop back down.
+      expect(pngSize(bytes)).toEqual(expectedSelectionSize(facts))
+
+      // Every pixel is one of the two exact bands -- nothing in between, which
+      // is what a blended seam or an off-by-a-row crop would produce.
+      const report = await analyzePng(decoder, bytes, {
+        colors: [TOP_BAND, BOTTOM_BAND, OVERLAY_BORDER],
+      })
+      expect(report.colors[OVERLAY_BORDER]?.count ?? 0).toBe(0)
+      const banded = (report.colors[TOP_BAND]?.count ?? 0) + (report.colors[BOTTOM_BAND]?.count ?? 0)
+      expect(banded).toBe(report.width * report.height)
+
+      // The four corners, named individually, exactly as at 1x.
+      expect(await corners(bytes, [])).toEqual({
+        topLeft: TOP_BAND,
+        topRight: TOP_BAND,
+        bottomLeft: BOTTOM_BAND,
+        bottomRight: BOTTOM_BAND,
+      })
+
+      await page.close()
+    } finally {
+      await harness2.close()
+    }
+  })
+})
