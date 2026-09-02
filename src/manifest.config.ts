@@ -34,7 +34,7 @@ const e2eOnly = isE2eBuild
 export default defineManifest({
   manifest_version: 3,
   name: 'Full Page Shot',
-  version: '1.1.0',
+  version: '1.2.0',
   description: 'Capture the entire scrollable page in one click.',
   minimum_chrome_version: '116',
   permissions: [

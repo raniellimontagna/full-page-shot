@@ -1,6 +1,6 @@
 {
   "name": "full-page-shot",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Capture the entire scrollable page in one click.",
   "private": true,
   "type": "module",
