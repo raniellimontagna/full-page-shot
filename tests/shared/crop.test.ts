@@ -76,6 +76,13 @@ describe('planCrop', () => {
     expect(top.y + top.height).toBe(bottom.y)
   })
 
+  it('produces adjacent device rects with no gap or overlap at dpr 2', () => {
+    const dpr = 2
+    const left = planCrop({ x: 0, y: 0, width: 33, height: 10 }, dpr, FRAME)
+    const right = planCrop({ x: 33, y: 0, width: 33, height: 10 }, dpr, FRAME)
+    expect(left.x + left.width).toBe(right.x)
+  })
+
   it('clamps a rect extending past the right/bottom frame edge', () => {
     expect(planCrop({ x: 1590, y: 1190, width: 50, height: 50 }, 1, FRAME)).toEqual({
       x: 1590,

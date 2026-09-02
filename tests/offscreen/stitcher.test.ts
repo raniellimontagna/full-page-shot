@@ -70,17 +70,35 @@ describe('stitcherFromFrame', () => {
     expect(bitmap.closed).toBe(true)
   })
 
-  it('with a crop: sizes the canvas to the crop and draws only the source rect (nine-arg drawImage)', async () => {
+  it('with a crop: plans against the real decoded frame size, sizes the canvas to the crop, and draws only the source rect (nine-arg drawImage)', async () => {
+    // This is the real production path (`src/offscreen/index.ts` calls
+    // `stitcherFromFrame` with exactly this `{ rect, devicePixelRatio }`
+    // shape) -- `planCrop` runs inside `stitcherFromFrame` itself, against
+    // the frame it just decoded, not against a value the caller precomputed.
     const bitmap = new FakeBitmap(1600, 1200)
     const { drawCalls } = stubCanvasEnv(bitmap)
 
     const { stitcherFromFrame } = await import('../../src/offscreen/stitcher')
-    const crop = { x: 20, y: 40, width: 200, height: 100 }
+    const crop = { rect: { x: 10, y: 20, width: 100, height: 50 }, devicePixelRatio: 2 }
     const stitcher = await stitcherFromFrame('data:image/png;base64,x', crop)
 
+    // planCrop({x:10,y:20,width:100,height:50}, 2, {width:1600,height:1200})
+    // -> { x: 20, y: 40, width: 200, height: 100 }.
     expect(stitcher.size).toEqual({ width: 200, height: 100 })
     expect(drawCalls).toHaveLength(1)
     expect(drawCalls[0]).toEqual([bitmap, 20, 40, 200, 100, 0, 0, 200, 100])
+    expect(bitmap.closed).toBe(true)
+  })
+
+  it('rejects without constructing a canvas when planCrop throws (crop outside the frame), and still closes the bitmap', async () => {
+    const bitmap = new FakeBitmap(100, 100)
+    const { drawCalls } = stubCanvasEnv(bitmap)
+
+    const { stitcherFromFrame } = await import('../../src/offscreen/stitcher')
+    const crop = { rect: { x: 5000, y: 5000, width: 10, height: 10 }, devicePixelRatio: 1 }
+
+    await expect(stitcherFromFrame('data:image/png;base64,x', crop)).rejects.toThrow(/empty/i)
+    expect(drawCalls).toHaveLength(0)
     expect(bitmap.closed).toBe(true)
   })
 

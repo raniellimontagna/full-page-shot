@@ -1,5 +1,6 @@
+import { planCrop, type DeviceRect } from '../shared/crop'
 import { planEncode } from '../shared/formats'
-import type { DeviceRect } from '../shared/crop'
+import type { CssRect } from '../shared/messages'
 import type { DownloadFormat, Scale } from '../shared/prefs'
 
 export interface ExportOptions {
@@ -135,17 +136,28 @@ export async function decodeFrame(dataUrl: string): Promise<ImageBitmap> {
  * `captureVisibleTab` is the whole image. It still goes through the same
  * export path so scale and format behave identically in both modes.
  *
- * `crop`, when given, is already a device-pixel rect (see `planCrop`) --
- * this function does not plan one itself, it only draws it. The canvas is
- * sized to the crop instead of the full frame, so the exported image is just
- * the selected region.
+ * `crop`, when given, is selection mode's CSS-px rect plus the captured
+ * tab's `devicePixelRatio` -- not yet a device-pixel rect. `planCrop` needs
+ * the frame's real dimensions to convert and clamp it, which are only known
+ * once this function has decoded the frame, so planning happens here rather
+ * than in the caller: there is exactly one production path from a data URL
+ * to a (possibly cropped) `Stitcher`, decoding exactly once. The bitmap is
+ * closed in `finally` on every path, including a `planCrop` throw (an
+ * out-of-frame or zero-size selection).
  */
-export async function stitcherFromFrame(dataUrl: string, crop?: DeviceRect): Promise<Stitcher> {
+export async function stitcherFromFrame(
+  dataUrl: string,
+  crop?: { rect: CssRect; devicePixelRatio: number },
+): Promise<Stitcher> {
   const bitmap = await decodeFrame(dataUrl)
   try {
     if (crop) {
-      const stitcher = new Stitcher(crop.width, crop.height)
-      stitcher.drawBitmapCropped(bitmap, crop)
+      const deviceRect = planCrop(crop.rect, crop.devicePixelRatio, {
+        width: bitmap.width,
+        height: bitmap.height,
+      })
+      const stitcher = new Stitcher(deviceRect.width, deviceRect.height)
+      stitcher.drawBitmapCropped(bitmap, deviceRect)
       return stitcher
     }
     const stitcher = new Stitcher(bitmap.width, bitmap.height)
