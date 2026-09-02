@@ -61,6 +61,7 @@ describe('scrollToStep', () => {
         cb()
         return 0
       },
+      clearTimeout: () => {},
     } as unknown as Window
 
     await scrollToStep(win, 1600)
@@ -92,6 +93,13 @@ describe('scrollToStep', () => {
           cb()
         }, ms) as unknown as number
       }) as Window['setTimeout'],
+      // `nextFrame` guards every frame with a timer it clears once the frame
+      // lands. Without this the fake window is not window-shaped enough to run
+      // the real helper -- and the uncleared guards would push phantom
+      // 'settle' entries into `order` 200ms later.
+      clearTimeout: ((id: number) => {
+        clearTimeout(id)
+      }) as unknown as Window['clearTimeout'],
     } as unknown as Window
 
     let resolved = false

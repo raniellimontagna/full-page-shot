@@ -320,11 +320,45 @@ describe('content script area selection', () => {
     const pending = send(listener, { type: 'selectArea' })
     expect(document.querySelector(OVERLAY_TAG)).not.toBeNull()
 
-    await vi.advanceTimersByTimeAsync(watchdogMs)
+    // Genuinely idle: no pointer, no key, nothing. An evicted worker produces
+    // no input either, so this is exactly the case the watchdog exists for.
+    await vi.advanceTimersByTimeAsync(watchdogMs + 1_000)
 
     expect(document.querySelector(OVERLAY_TAG)).toBeNull()
-    await vi.advanceTimersByTimeAsync(100)
+    await vi.advanceTimersByTimeAsync(500)
     expect(await pending).toEqual({ ok: true, rect: null })
+  })
+
+  // Ten seconds is an ordinary amount of time to spend choosing a region.
+  // Arming the watchdog once and never re-arming it made deliberation
+  // indistinguishable from abandonment: the overlay vanished mid-thought and
+  // the user got a silent cancel. The overlay reports activity, so the timer
+  // measures silence from the *page*, which is what abandonment actually is.
+  it('keeps the overlay alive while the user is still working, past the watchdog', async () => {
+    vi.useFakeTimers()
+    const { listener, watchdogMs } = await loadContentScript()
+
+    const pending = send(listener, { type: 'selectArea' })
+    const host = document.querySelector(OVERLAY_TAG)
+    if (!host) throw new Error('no overlay mounted')
+
+    // The user hovers around the page for longer than the whole watchdog
+    // period, deciding what to frame.
+    for (let elapsed = 0; elapsed <= watchdogMs + 1_000; elapsed += 1_000) {
+      host.dispatchEvent(
+        new PointerEvent('pointermove', { clientX: 50, clientY: 50, bubbles: true, cancelable: true }),
+      )
+      await vi.advanceTimersByTimeAsync(1_000)
+    }
+    expect(document.querySelector(OVERLAY_TAG)).not.toBeNull()
+
+    // ...and only then drags. The selection still lands.
+    dispatchPointer('pointerdown', 100, 120)
+    dispatchPointer('pointermove', 400, 320)
+    dispatchPointer('pointerup', 400, 320)
+    await vi.advanceTimersByTimeAsync(500)
+
+    expect(await pending).toEqual({ ok: true, rect: { x: 100, y: 120, width: 300, height: 200 } })
   })
 
   // The reply is the end of this command, so the timer must not outlive it and

@@ -1,4 +1,5 @@
 import type { PageMeasurements } from '../core/types'
+import { nextFrame } from './next-frame'
 
 /** Milliseconds to wait after painting, for lazy-loaded content to swap in. */
 export const SETTLE_DELAY_MS = 120
@@ -36,10 +37,6 @@ export function measurePage(win: Window): PageMeasurements {
     scrollX: win.scrollX,
     scrollY: win.scrollY,
   }
-}
-
-function nextFrame(win: Window): Promise<void> {
-  return new Promise((resolve) => win.requestAnimationFrame(() => resolve()))
 }
 
 export async function scrollToStep(win: Window, y: number): Promise<void> {

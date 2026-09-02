@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MIN_SELECTION_PX } from '../../src/shared/selection'
+import { FRAME_TIMEOUT_MS } from '../../src/content/next-frame'
 import {
   OVERLAY_TAG,
   removeSelectionOverlay,
@@ -38,6 +39,8 @@ describe('selection overlay', () => {
   afterEach(() => {
     removeSelectionOverlay(document)
     document.body.innerHTML = ''
+    vi.useRealTimers()
+    vi.restoreAllMocks()
   })
 
   it('mounts a single host with a shadow root while a selection is in progress', async () => {
@@ -211,5 +214,245 @@ describe('selection overlay', () => {
       pressEscape()
     }).not.toThrow()
     expect(host()).toBeNull()
+  })
+})
+
+/**
+ * The one guarantee the service worker leans on: it calls `captureVisibleTab`
+ * the instant the reply lands, so by then the overlay must be not merely
+ * detached but *painted away*. Asserting "the host is gone once the promise
+ * resolves" does not test that at all -- it passes with both waits deleted.
+ * These tests drive the frames by hand so the ordering itself is pinned.
+ */
+describe('selection overlay frame discipline', () => {
+  afterEach(() => {
+    removeSelectionOverlay(document)
+    document.body.innerHTML = ''
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  function flush(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 0))
+  }
+
+  it('detaches the host, then waits two painted frames before resolving', async () => {
+    const frames: FrameRequestCallback[] = []
+    const hostWhenRequested: (Element | null)[] = []
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+      hostWhenRequested.push(host())
+      frames.push(cb)
+      return frames.length
+    })
+
+    const pending = selectArea(document)
+    let settled = false
+    void pending.then(() => {
+      settled = true
+    })
+    drag([100, 120], [400, 320])
+    await flush()
+
+    // First frame requested, and the host is already out of the document —
+    // the frame is waiting for the paint that *follows* the removal.
+    expect(raf).toHaveBeenCalledTimes(1)
+    expect(hostWhenRequested[0]).toBeNull()
+    expect(host()).toBeNull()
+    expect(settled).toBe(false)
+
+    frames[0]?.(0)
+    await flush()
+    expect(raf).toHaveBeenCalledTimes(2)
+    // Still not settled: one frame is not enough. The first only queues the
+    // paint; the second is what proves it happened.
+    expect(settled).toBe(false)
+
+    frames[1]?.(0)
+    await expect(pending).resolves.toEqual({ x: 100, y: 120, width: 300, height: 200 })
+    expect(raf).toHaveBeenCalledTimes(2)
+  })
+
+  it('waits the same two frames on a cancel', async () => {
+    const frames: FrameRequestCallback[] = []
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+      frames.push(cb)
+      return frames.length
+    })
+
+    const pending = selectArea(document)
+    let settled = false
+    void pending.then(() => {
+      settled = true
+    })
+    pressEscape()
+    await flush()
+
+    expect(raf).toHaveBeenCalledTimes(1)
+    expect(settled).toBe(false)
+    frames[0]?.(0)
+    await flush()
+    expect(settled).toBe(false)
+    frames[1]?.(0)
+    await expect(pending).resolves.toBeNull()
+    expect(raf).toHaveBeenCalledTimes(2)
+  })
+
+  // A tab hidden between `pointerup` and the paint stops being served frames
+  // at all. The reply still has to arrive, or the service worker waits forever
+  // on a message that is never coming.
+  it('still resolves when the tab is hidden and no frame ever arrives', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1)
+
+    const pending = selectArea(document)
+    drag([100, 120], [400, 320])
+
+    await vi.advanceTimersByTimeAsync(FRAME_TIMEOUT_MS * 2 + 10)
+    await expect(pending).resolves.toEqual({ x: 100, y: 120, width: 300, height: 200 })
+    expect(host()).toBeNull()
+  })
+})
+
+/**
+ * A cancelled capture must leave the page exactly as it found it. A page that
+ * sees the user's Escape closes its modal; one that sees the pointer stream
+ * runs its own drag, lightbox or editor gesture. Either is the capture
+ * altering the page -- the rule that outranks everything else here.
+ */
+describe('selection overlay event isolation', () => {
+  afterEach(() => {
+    removeSelectionOverlay(document)
+    document.body.innerHTML = ''
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  interface PageSpy {
+    counts: Record<string, number>
+    detach: () => void
+  }
+
+  /** Stands in for a page with its own document-level handlers. */
+  function watchPage(): PageSpy {
+    const counts: Record<string, number> = {
+      keydown: 0,
+      pointerdown: 0,
+      pointermove: 0,
+      pointerup: 0,
+      wheel: 0,
+    }
+    const handlers = Object.keys(counts).map((type) => {
+      const handler = (): void => {
+        counts[type] = (counts[type] ?? 0) + 1
+      }
+      document.addEventListener(type, handler)
+      return { type, handler }
+    })
+    return {
+      counts,
+      detach: () => {
+        for (const { type, handler } of handlers) document.removeEventListener(type, handler)
+      },
+    }
+  }
+
+  it('keeps a full drag away from the page', async () => {
+    const page = watchPage()
+    const pending = selectArea(document)
+
+    drag([100, 120], [400, 320])
+    await pending
+
+    expect(page.counts).toMatchObject({ pointerdown: 0, pointermove: 0, pointerup: 0 })
+    page.detach()
+  })
+
+  it('keeps the Escape cancel away from the page', async () => {
+    const page = watchPage()
+    const pending = selectArea(document)
+
+    pointer('pointerdown', 100, 100)
+    pointer('pointermove', 300, 300)
+    pressEscape()
+    await pending
+
+    expect(page.counts.keydown).toBe(0)
+    expect(page.counts.pointerdown).toBe(0)
+    page.detach()
+  })
+
+  // `touch-action: none` on the host covers touch only. A wheel still scrolls
+  // the page out from under a viewport-fixed rectangle, so the region the user
+  // framed is not the region that gets captured.
+  it('swallows the wheel so the page cannot scroll under the selection', async () => {
+    const page = watchPage()
+    const pending = selectArea(document)
+
+    const mounted = host()
+    const wheel = new WheelEvent('wheel', { deltaY: 200, bubbles: true, cancelable: true })
+    mounted?.dispatchEvent(wheel)
+
+    expect(wheel.defaultPrevented).toBe(true)
+    expect(page.counts.wheel).toBe(0)
+
+    pressEscape()
+    await pending
+    page.detach()
+  })
+
+  it('stops swallowing events once the overlay is gone', async () => {
+    const pending = selectArea(document)
+    pressEscape()
+    await pending
+
+    const page = watchPage()
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    document.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+    expect(page.counts.keydown).toBe(1)
+    expect(page.counts.pointerdown).toBe(1)
+    page.detach()
+  })
+})
+
+/**
+ * The overlay is up for as long as the user takes to choose a region, which is
+ * routinely longer than the restore watchdog's patience. Abandonment means no
+ * *input*, not no *reply*, so the overlay reports the user's activity back and
+ * the watchdog measures silence from the page, not from the worker.
+ */
+describe('selection overlay activity reporting', () => {
+  afterEach(() => {
+    removeSelectionOverlay(document)
+    document.body.innerHTML = ''
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('reports pointer and key activity, throttled to at most one call a second', async () => {
+    vi.useFakeTimers()
+    const onActivity = vi.fn()
+    const pending = selectArea(document, { onActivity })
+
+    pointer('pointerdown', 100, 100)
+    for (let i = 0; i < 20; i += 1) pointer('pointermove', 100 + i, 100 + i)
+    // A burst of pointermove is one gesture, not twenty reasons to re-arm.
+    expect(onActivity).toHaveBeenCalledTimes(1)
+
+    vi.advanceTimersByTime(1001)
+    pointer('pointermove', 300, 300)
+    expect(onActivity).toHaveBeenCalledTimes(2)
+
+    vi.advanceTimersByTime(1001)
+    pressEscape()
+    expect(onActivity).toHaveBeenCalledTimes(3)
+
+    await vi.advanceTimersByTimeAsync(FRAME_TIMEOUT_MS * 2 + 10)
+    await expect(pending).resolves.toBeNull()
+  })
+
+  it('works without an onActivity callback', async () => {
+    const pending = selectArea(document)
+    drag([100, 120], [400, 320])
+    await expect(pending).resolves.toEqual({ x: 100, y: 120, width: 300, height: 200 })
   })
 })

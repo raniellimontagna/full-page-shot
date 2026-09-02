@@ -1,5 +1,6 @@
 import type { CssRect } from '../shared/messages'
 import { MIN_SELECTION_PX } from '../shared/selection'
+import { nextFrame } from './next-frame'
 
 /**
  * The overlay's host tag. A hyphenated, extension-prefixed name so it can
@@ -131,9 +132,13 @@ function normalise(a: { x: number; y: number }, b: { x: number; y: number }): Cs
   }
 }
 
-function nextFrame(win: Window): Promise<void> {
-  return new Promise((resolve) => win.requestAnimationFrame(() => resolve()))
-}
+/**
+ * The overlay reports user activity no more often than this. A drag fires
+ * `pointermove` at frame rate; re-arming a ten-second watchdog sixty times a
+ * second is pure waste, and one report per second is two orders of magnitude
+ * inside the margin that matters.
+ */
+export const ACTIVITY_THROTTLE_MS = 1000
 
 /**
  * Tears down any overlay, cancelling an in-flight `selectArea` as it goes.
@@ -164,10 +169,16 @@ export function removeSelectionOverlay(doc: Document): void {
  * `captureVisibleTab` the instant this reply lands: one frame queues the paint
  * that follows the removal, the second waits for it to have happened. Without
  * that wait the overlay itself shows up in the screenshot.
+ *
+ * `opts.onActivity` is called (at most once per `ACTIVITY_THROTTLE_MS`)
+ * whenever the user touches the overlay, so a caller with a silence timer can
+ * tell deliberation from abandonment. The overlay can be up for as long as the
+ * user likes; the caller's watchdog should be measuring the user, not the
+ * clock.
  */
 export async function selectArea(
   doc: Document,
-  opts: { minPx?: number } = {},
+  opts: { minPx?: number; onActivity?: () => void } = {},
 ): Promise<CssRect | null> {
   const minPx = opts.minPx ?? MIN_SELECTION_PX
   const win = doc.defaultView
@@ -190,42 +201,84 @@ export async function selectArea(
   })
 
   let origin: { x: number; y: number } | null = null
+  let lastReport = Number.NEGATIVE_INFINITY
 
-  // Every pointer event is `preventDefault`ed so the drag cannot start a text
-  // selection, a native image drag, or a touch scroll underneath the overlay.
+  /**
+   * Tells the caller the user is still here. The watchdog above this measures
+   * silence, and choosing a region is not silence -- without this a user who
+   * takes ten seconds to decide has the overlay pulled out from under them.
+   * Eviction protection is untouched: an evicted worker produces no pointer
+   * input either, so a genuinely abandoned overlay still times out.
+   */
+  const reportActivity = (): void => {
+    if (opts.onActivity === undefined) return
+    const now = Date.now()
+    if (now - lastReport < ACTIVITY_THROTTLE_MS) return
+    lastReport = now
+    opts.onActivity()
+  }
+
+  /**
+   * Stops the event dead. `preventDefault` alone leaves the page free to act
+   * on it -- a modal closes on the user's Escape, a lightbox runs its own drag
+   * -- which is a cancelled capture altering the page, the one thing that must
+   * never happen. `stopImmediatePropagation` from the capture phase is what
+   * actually keeps the gesture ours.
+   */
+  const swallow = (event: Event): void => {
+    event.preventDefault()
+    event.stopImmediatePropagation()
+  }
+
   const onPointerDown = (event: PointerEvent): void => {
     if (origin !== null) return
-    event.preventDefault()
+    swallow(event)
+    reportActivity()
     origin = pointOf(event)
     paint(parts, { x: origin.x, y: origin.y, width: 0, height: 0 })
   }
   const onPointerMove = (event: PointerEvent): void => {
+    // Reported before the drag guard, deliberately: a user moving the pointer
+    // around the page while deciding what to frame has drawn nothing yet, but
+    // is unmistakably still here. Treating only an active drag as activity
+    // would time out the exact user this exists to protect.
+    reportActivity()
     if (origin === null) return
-    event.preventDefault()
+    swallow(event)
     paint(parts, normalise(origin, pointOf(event)))
   }
   const onPointerUp = (event: PointerEvent): void => {
     if (origin === null) return
-    event.preventDefault()
+    swallow(event)
     const rect = normalise(origin, pointOf(event))
     // A click, or a drag too small to have been meant: a cancel, not an error.
     settle(rect.width < minPx || rect.height < minPx ? null : rect)
   }
   const onKeyDown = (event: KeyboardEvent): void => {
     if (event.key !== 'Escape') return
-    event.preventDefault()
+    swallow(event)
+    reportActivity()
     settle(null)
   }
+  // `touch-action: none` on the host only covers touch. A wheel would still
+  // scroll the page under a viewport-fixed rectangle, so the region the user
+  // framed is not the region that gets captured.
+  const onWheel = (event: WheelEvent): void => {
+    swallow(event)
+  }
 
-  // `pointerdown` on the host (it covers the viewport, so it is the target),
-  // but move/up on the document: jsdom has no `setPointerCapture`, and without
-  // capture a drag that slips past the host still has to be followed.
-  parts.host.addEventListener('pointerdown', onPointerDown)
-  doc.addEventListener('pointermove', onPointerMove)
-  doc.addEventListener('pointerup', onPointerUp)
-  // Capture phase, so a page that swallows keydown cannot trap the user in the
-  // overlay with no way out.
+  // All in the capture phase, on the document, so they run before anything the
+  // page registered and can stop the event reaching it. (Move and up are on
+  // the document rather than the host for a second reason: jsdom has no
+  // `setPointerCapture`, and without capture a drag that slips past the host
+  // still has to be followed.)
+  doc.addEventListener('pointerdown', onPointerDown, true)
+  doc.addEventListener('pointermove', onPointerMove, true)
+  doc.addEventListener('pointerup', onPointerUp, true)
   doc.addEventListener('keydown', onKeyDown, true)
+  // `passive: false` is required: a passive listener may not `preventDefault`,
+  // and wheel listeners default to passive on document-level targets.
+  parts.host.addEventListener('wheel', onWheel, { capture: true, passive: false })
 
   const session = { cancel: (): void => settle(null) }
   active = session
@@ -234,10 +287,11 @@ export async function selectArea(
     return await selection
   } finally {
     if (active === session) active = null
-    parts.host.removeEventListener('pointerdown', onPointerDown)
-    doc.removeEventListener('pointermove', onPointerMove)
-    doc.removeEventListener('pointerup', onPointerUp)
+    doc.removeEventListener('pointerdown', onPointerDown, true)
+    doc.removeEventListener('pointermove', onPointerMove, true)
+    doc.removeEventListener('pointerup', onPointerUp, true)
     doc.removeEventListener('keydown', onKeyDown, true)
+    parts.host.removeEventListener('wheel', onWheel, { capture: true })
     parts.host.remove()
     await nextFrame(win)
     await nextFrame(win)

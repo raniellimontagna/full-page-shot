@@ -94,12 +94,22 @@ async function handle(request: ContentRequest): Promise<ContentResponse> {
   // out: the reply ends the command, and a timer outliving it would scroll a
   // page that is no longer in a capture.
   //
+  // The overlay re-arms it through `onActivity`, and that is not a nicety.
+  // Every other command re-arms the watchdog by *arriving*; this one occupies
+  // the page for as long as the user takes to choose a region, and ten seconds
+  // of deliberation is ordinary. Armed once and never re-armed, the watchdog
+  // could not tell thinking from abandonment: it pulled the overlay out from
+  // under the user mid-thought and handed back a silent cancel. Activity on
+  // the page is what abandonment is really the absence of -- and an evicted
+  // worker produces no pointer input either, so the eviction case this timer
+  // was written for is untouched.
+  //
   // A cancel is not a failure -- `{ ok: true, rect: null }`, and the service
   // worker delivers nothing and shows a neutral badge.
   if (request.type === 'selectArea') {
     armWatchdog()
     try {
-      const rect = await selectArea(document)
+      const rect = await selectArea(document, { onActivity: armWatchdog })
       return { ok: true, rect }
     } finally {
       clearWatchdog()
