@@ -191,7 +191,16 @@ export interface CaptureProbe {
 }
 
 /** Mirrors `CaptureMode` in `src/shared/prefs.ts`. */
-export type CaptureMode = 'full' | 'viewport'
+export type CaptureMode = 'full' | 'viewport' | 'selection'
+
+/**
+ * The selection overlay's host tag (`OVERLAY_TAG` in
+ * `src/content/selection-overlay.ts`), duplicated here rather than imported:
+ * `e2e/` is compiled as a separate project against Node types and must not
+ * pull extension sources into its graph. A drift between the two would be
+ * caught immediately -- every wait below would time out.
+ */
+export const OVERLAY_TAG = 'fps-selection-overlay'
 
 /** Mirrors the writable half of `Prefs` in `src/shared/prefs.ts`. */
 export interface PrefsPatch {
@@ -227,6 +236,70 @@ export async function runCapture(
       ).__fpsCaptureForTest(url, requestedMode),
     { url: page.url(), requestedMode: mode },
   )) as CaptureProbe
+}
+
+/**
+ * Starts a capture and returns as soon as it is *running*, without waiting for
+ * it to finish.
+ *
+ * Selection mode blocks on a human: `captureTab` does not resolve until the
+ * user has dragged a rectangle or cancelled. `runCapture` awaits the probe, so
+ * using it here would deadlock -- the drag can only be driven from Node, and
+ * Node is blocked awaiting the drag -- until the content script's 10s restore
+ * watchdog fires and cancels the overlay out from under the test.
+ *
+ * The pending promise is parked on `globalThis` in the worker instead, so the
+ * test can drive `page.mouse` / `page.keyboard` and then collect the result
+ * with `settleCapture`. Exactly one capture may be in flight at a time: the
+ * hook monkeypatches Chrome globals for the duration and saves the originals
+ * in locals, so a second concurrent probe would save the *first probe's*
+ * wrappers as its "originals" and never restore the real APIs.
+ */
+export async function startCapture(
+  context: BrowserContext,
+  page: Page,
+  mode: CaptureMode,
+): Promise<void> {
+  const worker = await serviceWorker(context)
+  await worker.evaluate(
+    ({ url, requestedMode }) => {
+      const scope = globalThis as unknown as {
+        __fpsCaptureForTest: (u: string, m?: string) => Promise<unknown>
+        __fpsPendingForTest?: Promise<unknown>
+      }
+      if (scope.__fpsPendingForTest !== undefined) {
+        throw new Error('a capture is already pending; settle it before starting another')
+      }
+      scope.__fpsPendingForTest = scope.__fpsCaptureForTest(url, requestedMode)
+    },
+    { url: page.url(), requestedMode: mode },
+  )
+}
+
+/** Awaits the capture `startCapture` parked, and clears the slot. */
+export async function settleCapture(context: BrowserContext): Promise<CaptureProbe> {
+  const worker = await serviceWorker(context)
+  return (await worker.evaluate(async () => {
+    const scope = globalThis as unknown as { __fpsPendingForTest?: Promise<unknown> }
+    const pending = scope.__fpsPendingForTest
+    scope.__fpsPendingForTest = undefined
+    if (pending === undefined) throw new Error('no capture is pending')
+    return await pending
+  })) as CaptureProbe
+}
+
+/** Resolves once the selection overlay is mounted in the page. */
+export async function waitForOverlay(page: Page): Promise<void> {
+  await page.waitForFunction(
+    (tag) => document.querySelector(tag) !== null,
+    OVERLAY_TAG,
+    { timeout: 15_000 },
+  )
+}
+
+/** Whether any overlay host is left behind in the page. */
+export function overlayPresent(page: Page): Promise<boolean> {
+  return page.evaluate((tag) => document.querySelector(tag) !== null, OVERLAY_TAG)
 }
 
 /** Decodes a `data:image/png;base64,...` capture result into raw bytes. */
