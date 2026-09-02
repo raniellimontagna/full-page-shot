@@ -42,7 +42,7 @@ function makeDeps(overrides: Partial<CaptureDeps> = {}, page: PageMeasurements =
       offscreenCalls.push(request.type)
       events.push(`offscreen:${request.type}`)
       return request.type === 'finishCapture'
-        ? { ok: true as const, dataUrl: STITCHED }
+        ? { ok: true as const, clipboardDataUrl: STITCHED }
         : { ok: true as const }
     }),
     captureVisibleTab: vi.fn(async () => {
@@ -278,12 +278,12 @@ describe('runCapture', () => {
       sendToOffscreen: vi.fn(async (request: OffscreenRequest) => {
         sent.push(request)
         return request.type === 'finishCapture'
-          ? { ok: true as const, dataUrl: STITCHED }
+          ? { ok: true as const, clipboardDataUrl: STITCHED }
           : { ok: true as const }
       }),
     })
     await runCapture(1, deps)
-    expect(sent.at(-1)).toEqual({ type: 'finishCapture' })
+    expect(sent.at(-1)).toMatchObject({ type: 'finishCapture' })
   })
 
   // `ok: true` with no image is a broken offscreen document, not a success.

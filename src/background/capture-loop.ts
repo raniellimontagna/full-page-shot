@@ -181,13 +181,22 @@ export async function runCapture(tabId: number, deps: CaptureDeps): Promise<Capt
       )
     }
 
-    const finished = await deps.sendToOffscreen({ type: 'finishCapture' })
+    // TODO(Task 3): pass the user's `scale`/`downloadFormat` and the captured
+    // tab's real `devicePixelRatio` through from the caller. Until the service
+    // worker learns to read those preferences, this asks for exactly the 1.0.0
+    // behaviour -- the canvas as captured, PNG -- so nothing changes yet.
+    const finished = await deps.sendToOffscreen({
+      type: 'finishCapture',
+      scale: 2,
+      downloadFormat: 'png',
+      devicePixelRatio: 1,
+    })
     if (!finished.ok) throw new Error(finished.error)
-    if (!finished.dataUrl) throw new Error('the offscreen document returned no image')
+    if (!finished.clipboardDataUrl) throw new Error('the offscreen document returned no image')
     began = false
 
     return {
-      dataUrl: finished.dataUrl,
+      dataUrl: finished.clipboardDataUrl,
       truncated: plan.truncated,
       canvasWidth: plan.canvasWidth,
       canvasHeight: plan.canvasHeight,

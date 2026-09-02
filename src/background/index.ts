@@ -333,8 +333,8 @@ if (import.meta.env.VITE_FPS_E2E === '1') {
       const result = (realSend as (...a: unknown[]) => unknown).apply(chrome.runtime, args)
       if (request?.type === 'finishCapture' && result instanceof Promise) {
         void result.then((response: unknown) => {
-          const reply = response as { ok?: boolean; dataUrl?: string }
-          dataUrl = reply?.ok === true ? (reply.dataUrl ?? null) : null
+          const reply = response as { ok?: boolean; clipboardDataUrl?: string }
+          dataUrl = reply?.ok === true ? (reply.clipboardDataUrl ?? null) : null
         })
       }
       return result

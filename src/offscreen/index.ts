@@ -1,5 +1,5 @@
-import type { OffscreenRequest, OffscreenResponse } from '../shared/messages'
-import { Stitcher } from './stitcher'
+import type { ExportRequestFields, OffscreenRequest, OffscreenResponse } from '../shared/messages'
+import { Stitcher, stitcherFromFrame } from './stitcher'
 
 // Streamed across messages: the service worker sends one frame at a time,
 // so the canvas must persist between `beginCapture`/`addFrame` calls rather
@@ -27,6 +27,26 @@ function blobToDataUrl(blob: Blob): Promise<string> {
   })
 }
 
+/**
+ * Encodes one finished canvas into the clipboard image and the download image.
+ *
+ * PNG downloads encode once and hand the same string back twice: the two sinks
+ * would otherwise pay for an identical encode of a possibly very large canvas.
+ */
+async function exportBoth(
+  stitcher: Stitcher,
+  { scale, downloadFormat, devicePixelRatio }: ExportRequestFields,
+): Promise<OffscreenResponse> {
+  const clipboardDataUrl = await blobToDataUrl(
+    await stitcher.export({ scale, devicePixelRatio, format: 'png' }),
+  )
+  const downloadDataUrl =
+    downloadFormat === 'png'
+      ? clipboardDataUrl
+      : await blobToDataUrl(await stitcher.export({ scale, devicePixelRatio, format: downloadFormat }))
+  return { ok: true, clipboardDataUrl, downloadDataUrl }
+}
+
 async function handle(request: OffscreenRequest): Promise<OffscreenResponse> {
   switch (request.type) {
     case 'beginCapture':
@@ -44,10 +64,15 @@ async function handle(request: OffscreenRequest): Promise<OffscreenResponse> {
         // moment this reply lands. Delivery -- download in the service worker,
         // clipboard in the captured tab's content script -- happens in
         // contexts that can actually perform it.
-        return { ok: true, dataUrl: await blobToDataUrl(await stitcher.toBlob()) }
+        return await exportBoth(stitcher, request)
       } finally {
         stitcher = null
       }
+    }
+    case 'encodeSingleFrame': {
+      // No `stitcher` state is touched: viewport mode never begins a capture,
+      // and a full-page capture must not be disturbed if one is somehow live.
+      return await exportBoth(await stitcherFromFrame(request.dataUrl), request)
     }
     case 'abortCapture':
       stitcher = null
