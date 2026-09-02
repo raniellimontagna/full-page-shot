@@ -178,9 +178,28 @@ export interface CaptureProbe {
   /** How many times `chrome.downloads.download` was actually called. */
   downloadRequests: number
   offscreenClosed: boolean
-  /** The stitched PNG the offscreen document handed back, as a data URL. */
+  /** The image handed back for the clipboard, as a data URL. Always PNG. */
   dataUrl: string | null
+  clipboardDataUrl: string | null
+  /** The image handed to the download sink, in the preferred format. */
+  downloadDataUrl: string | null
+  /** The `type` of every message the worker sent to the page, in order. */
+  contentMessages: string[]
+  /** Whether the content script (an `executeScript` with `files`) was injected. */
+  contentScriptInjected: boolean
   error: string | null
+}
+
+/** Mirrors `CaptureMode` in `src/shared/prefs.ts`. */
+export type CaptureMode = 'full' | 'viewport'
+
+/** Mirrors the writable half of `Prefs` in `src/shared/prefs.ts`. */
+export interface PrefsPatch {
+  toClipboard?: boolean
+  toDownload?: boolean
+  captureMode?: CaptureMode
+  scale?: 1 | 2
+  downloadFormat?: 'png' | 'jpeg' | 'webp'
 }
 
 /**
@@ -193,16 +212,20 @@ export interface CaptureProbe {
  * so every capture reports its pixels and what to deliver is decided purely by
  * `setPrefs` -- the same switch a user has.
  */
-export async function runCapture(context: BrowserContext, page: Page): Promise<CaptureProbe> {
+export async function runCapture(
+  context: BrowserContext,
+  page: Page,
+  mode?: CaptureMode,
+): Promise<CaptureProbe> {
   const worker = await serviceWorker(context)
   return (await worker.evaluate(
-    async (url) =>
+    async ({ url, requestedMode }) =>
       await (
         globalThis as unknown as {
-          __fpsCaptureForTest: (u: string) => Promise<CaptureProbe>
+          __fpsCaptureForTest: (u: string, m?: CaptureMode) => Promise<CaptureProbe>
         }
-      ).__fpsCaptureForTest(url),
-    page.url(),
+      ).__fpsCaptureForTest(url, requestedMode),
+    { url: page.url(), requestedMode: mode },
   )) as CaptureProbe
 }
 
@@ -215,10 +238,14 @@ export function dataUrlToBuffer(dataUrl: string): Buffer {
   return Buffer.from(dataUrl.slice(comma + 1), 'base64')
 }
 
-export async function setPrefs(
-  context: BrowserContext,
-  prefs: { toClipboard: boolean; toDownload: boolean },
-): Promise<void> {
+/** The mime type declared by a `data:` URL, e.g. `image/jpeg`. */
+export function dataUrlMime(dataUrl: string): string {
+  const match = /^data:([^;,]+)[;,]/.exec(dataUrl)
+  if (!match?.[1]) throw new Error(`not a data URL: ${dataUrl.slice(0, 40)}`)
+  return match[1]
+}
+
+export async function setPrefs(context: BrowserContext, prefs: PrefsPatch): Promise<void> {
   const worker = await serviceWorker(context)
   await worker.evaluate(
     async (value) =>
@@ -265,14 +292,15 @@ export interface DeliveredFile {
 export async function newDownload(
   downloadDir: string,
   seen: Set<string>,
-  options: { immediate?: boolean } = {},
+  options: { immediate?: boolean; extension?: string } = {},
 ): Promise<DeliveredFile> {
   const dir = path.join(downloadDir, 'full-page-shot')
+  const extension = options.extension ?? '.png'
   const deadline = Date.now() + (options.immediate ? 0 : 15_000)
   let lastSeen = 'nothing'
   for (;;) {
     const names = await readdir(dir).catch(() => [] as string[])
-    const fresh = names.filter((name) => name.endsWith('.png') && !seen.has(name))
+    const fresh = names.filter((name) => name.endsWith(extension) && !seen.has(name))
     const partial = names.filter((name) => name.endsWith('.crdownload'))
     const name = fresh[0]
     if (name && partial.length === 0) {
@@ -280,7 +308,9 @@ export async function newDownload(
       const bytes = await readFile(filePath)
       // A PNG whose last chunk is not IEND is one Chrome has not finished
       // writing -- exactly the truncation a premature offscreen close causes.
-      if (bytes.subarray(-8, -4).toString('latin1') === 'IEND') {
+      // Only PNG carries that marker, so a lossy download is judged complete
+      // by the absence of a `.crdownload` sibling instead.
+      if (extension !== '.png' || bytes.subarray(-8, -4).toString('latin1') === 'IEND') {
         seen.add(name)
         return { filePath, bytes }
       }

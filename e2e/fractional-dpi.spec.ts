@@ -86,7 +86,12 @@ for (const dpr of [1.25, 1.5]) {
       const harness = await launchExtension({ deviceScaleFactor: dpr })
       try {
         const decoder = await decoderPage(harness.context)
-        await setPrefs(harness.context, { toClipboard: false, toDownload: false })
+        // `scale: 2` -- i.e. "ship the canvas as stitched". This file is about
+        // the stitching arithmetic in device pixels, so the 1x downscale (the
+        // shipped default since 1.1.0) would resample the very rows whose
+        // coverage is under test. The expectations below are therefore derived
+        // from the preference, not loosened to accommodate it.
+        await setPrefs(harness.context, { toClipboard: false, toDownload: false, scale: 2 })
         const page = await openFixture(harness.context, 'non-multiple.html')
         const facts = await readPageFacts(page)
         const probe = await runCapture(harness.context, page)

@@ -26,7 +26,7 @@ import {
 } from './sinks'
 import { createSingleFlight } from './single-flight'
 import { buildFilename, isCapturableUrl, loadPrefs, resolveCaptureMode } from '../shared/prefs'
-import type { CaptureMode } from '../shared/prefs'
+import type { CaptureMode, Prefs } from '../shared/prefs'
 import type {
   ContentRequest,
   ContentResponse,
@@ -480,15 +480,36 @@ if (import.meta.env.VITE_FPS_E2E === '1') {
      * only report "it went red".
      */
     error: string | null
-    /** The stitched PNG the offscreen document handed back, as a data URL. */
+    /** The PNG handed back for the clipboard, as a data URL. Alias of `clipboardDataUrl`. */
     dataUrl: string | null
+    /** The clipboard image, always PNG, whichever path produced it. */
+    clipboardDataUrl: string | null
+    /** The download image, encoded in the user's chosen format. */
+    downloadDataUrl: string | null
+    /**
+     * The `type` of every message the service worker sent to the page, in
+     * order. This is what makes "the viewport path never touches the page" an
+     * observation rather than a claim: `measure`, `hideFixed`, `scrollTo` and
+     * `restore` are the four messages that alter or interrogate the document,
+     * and a viewport capture must send none of them.
+     */
+    contentMessages: string[]
+    /**
+     * Whether `chrome.scripting.executeScript` was called with `files` -- i.e.
+     * whether the content script was injected at all. The one-expression
+     * `func:` injection the viewport path uses to read `devicePixelRatio` is
+     * deliberately not counted: it leaves nothing behind in the page.
+     */
+    contentScriptInjected: boolean
   }
 
-  const probeCapture = async (targetUrl: string): Promise<CaptureProbe> => {
+  const probeCapture = async (targetUrl: string, mode?: CaptureMode): Promise<CaptureProbe> => {
     const tab = (await chrome.tabs.query({})).find((candidate) => candidate.url === targetUrl)
     if (!tab || tab.id === undefined) throw new Error(`no tab at ${targetUrl}`)
 
     const realCapture = chrome.tabs.captureVisibleTab
+    const realTabsSend = chrome.tabs.sendMessage
+    const realExecuteScript = chrome.scripting.executeScript
     const realSend = chrome.runtime.sendMessage
     const realClose = chrome.offscreen.closeDocument
     const realDownload = chrome.downloads.download
@@ -496,26 +517,53 @@ if (import.meta.env.VITE_FPS_E2E === '1') {
 
     let frames = 0
     let downloadRequests = 0
-    let dataUrl: string | null = null
+    let clipboardDataUrl: string | null = null
+    let downloadDataUrlSeen: string | null = null
     let offscreenClosed = false
     let error: string | null = null
+    const contentMessages: string[] = []
+    let contentScriptInjected = false
 
     const tabsApi = chrome.tabs as unknown as Record<string, unknown>
     const runtimeApi = chrome.runtime as unknown as Record<string, unknown>
     const offscreenApi = chrome.offscreen as unknown as Record<string, unknown>
     const downloadsApi = chrome.downloads as unknown as Record<string, unknown>
+    const scriptingApi = chrome.scripting as unknown as Record<string, unknown>
 
     tabsApi.captureVisibleTab = (...args: unknown[]): unknown => {
       frames += 1
       return (realCapture as (...a: unknown[]) => unknown).apply(chrome.tabs, args)
     }
+    tabsApi.sendMessage = (...args: unknown[]): unknown => {
+      const request = args[1] as { type?: string } | undefined
+      if (typeof request?.type === 'string') contentMessages.push(request.type)
+      return (realTabsSend as (...a: unknown[]) => unknown).apply(chrome.tabs, args)
+    }
+    scriptingApi.executeScript = (...args: unknown[]): unknown => {
+      const injection = args[0] as { files?: unknown } | undefined
+      if (injection?.files !== undefined) contentScriptInjected = true
+      return (realExecuteScript as (...a: unknown[]) => unknown).apply(chrome.scripting, args)
+    }
     runtimeApi.sendMessage = (...args: unknown[]): unknown => {
       const request = args[0] as { type?: string } | undefined
       const result = (realSend as (...a: unknown[]) => unknown).apply(chrome.runtime, args)
-      if (request?.type === 'finishCapture' && result instanceof Promise) {
+      // Both of the offscreen document's export replies, because the two
+      // capture paths use different ones: the full page finishes a stitch,
+      // the viewport encodes a single frame. Reading only the first would
+      // report a viewport capture as having produced no image at all.
+      if (
+        (request?.type === 'finishCapture' || request?.type === 'encodeSingleFrame') &&
+        result instanceof Promise
+      ) {
         void result.then((response: unknown) => {
-          const reply = response as { ok?: boolean; clipboardDataUrl?: string }
-          dataUrl = reply?.ok === true ? (reply.clipboardDataUrl ?? null) : null
+          const reply = response as {
+            ok?: boolean
+            clipboardDataUrl?: string
+            downloadDataUrl?: string
+          }
+          const ok = reply?.ok === true
+          clipboardDataUrl = ok ? (reply.clipboardDataUrl ?? null) : null
+          downloadDataUrlSeen = ok ? (reply.downloadDataUrl ?? null) : null
         })
       }
       return result
@@ -536,9 +584,11 @@ if (import.meta.env.VITE_FPS_E2E === '1') {
 
     const startedAt = Date.now()
     try {
-      await captureTab(tab)
+      await captureTab(tab, mode)
     } finally {
       tabsApi.captureVisibleTab = realCapture
+      tabsApi.sendMessage = realTabsSend
+      scriptingApi.executeScript = realExecuteScript
       runtimeApi.sendMessage = realSend
       offscreenApi.closeDocument = realClose
       downloadsApi.download = realDownload
@@ -552,16 +602,23 @@ if (import.meta.env.VITE_FPS_E2E === '1') {
       elapsedMs,
       downloadRequests,
       offscreenClosed,
-      dataUrl,
+      dataUrl: clipboardDataUrl,
+      clipboardDataUrl,
+      downloadDataUrl: downloadDataUrlSeen,
+      contentMessages,
+      contentScriptInjected,
       error,
     }
   }
 
   Object.assign(globalThis, {
     __fpsCaptureForTest: probeCapture,
-    /** Sets the delivery preferences through the same storage the product reads. */
-    __fpsSetPrefsForTest: (prefs: { toClipboard: boolean; toDownload: boolean }) =>
-      chrome.storage.sync.set(prefs),
+    /**
+     * Sets preferences through the same storage the product reads. Partial:
+     * `chrome.storage.sync.set` merges, and `loadPrefs` fills the rest from
+     * `DEFAULT_PREFS`, so a test states only the preferences it cares about.
+     */
+    __fpsSetPrefsForTest: (prefs: Partial<Prefs>) => chrome.storage.sync.set(prefs),
     /**
      * One raw `captureVisibleTab` frame, for the fractional-DPI question: does
      * Chrome's own frame height equal `Math.round(viewportHeight * dpr)`?
