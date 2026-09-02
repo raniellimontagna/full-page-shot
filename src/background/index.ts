@@ -16,12 +16,13 @@
 import CONTENT_SCRIPT_FILE from '../content/content-script.ts?script&iife'
 import { runCapture } from './capture-loop'
 import {
-  badgeForDelivery,
+  badgeForCapture,
   copyViaContentScript,
   deliverCapture,
   downloadDataUrl,
   BADGE_FAILURE,
 } from './sinks'
+import { createSingleFlight } from './single-flight'
 import { buildFilename, isCapturableUrl, loadPrefs } from '../shared/prefs'
 import type {
   ContentRequest,
@@ -130,8 +131,15 @@ async function setBadge(tabId: number, text: string, color: string): Promise<voi
   setTimeout(() => void chrome.action.setBadgeText({ tabId, text: '' }).catch(() => {}), 3000)
 }
 
+const captureSingleFlight = createSingleFlight()
+
 /**
  * The whole capture, from injection to delivery, for one tab.
+ *
+ * Entry point and gatekeeper: it validates the tab, then hands the actual work
+ * to `runOneCapture` through `captureSingleFlight`, which refuses a capture
+ * while another one is running (see `single-flight.ts` for why overlapping
+ * captures corrupt each other).
  *
  * Extracted out of the `onClicked` listener so the end-to-end suite can drive
  * *this* function -- the same code a real toolbar click runs -- instead of a
@@ -152,6 +160,22 @@ export async function captureTab(tab: chrome.tabs.Tab): Promise<void> {
     return
   }
 
+  await captureSingleFlight(
+    () => runOneCapture(tabId, windowId, url),
+    async () => {
+      // Not silent, and not a ✓. The second click did not capture anything, so
+      // saying so is the honest signal -- and the page is left completely
+      // untouched, which is why this branch runs before a single injection.
+      console.warn(
+        '[full-page-shot] a capture is already running; ignoring this one. ' +
+          'Captures share one offscreen canvas, so they cannot overlap.',
+      )
+      await setBadge(tabId, BADGE_FAILURE.text, BADGE_FAILURE.color)
+    },
+  )
+}
+
+async function runOneCapture(tabId: number, windowId: number, url: string): Promise<void> {
   const closeOffscreen = makeOffscreenCloser()
   try {
     await chrome.scripting.executeScript({
@@ -160,7 +184,7 @@ export async function captureTab(tab: chrome.tabs.Tab): Promise<void> {
     })
 
     const prefs = await loadPrefs()
-    const { dataUrl } = await runCapture(tabId, {
+    const { dataUrl, truncated, canvasWidth, canvasHeight } = await runCapture(tabId, {
       sendToContent: (id, request: ContentRequest) =>
         chrome.tabs.sendMessage(id, request) as Promise<ContentResponse>,
       sendToOffscreen: (request: OffscreenRequest) =>
@@ -195,7 +219,21 @@ export async function captureTab(tab: chrome.tabs.Tab): Promise<void> {
       copy: () => copyViaContentScript(tabId, dataUrl),
       download: () => downloadDataUrl(dataUrl, buildFilename(new Date(), new URL(url).hostname)),
     })
-    const badge = badgeForDelivery(delivery)
+
+    // The planner clamps pages that would exceed Chrome's canvas ceilings, so
+    // what was delivered is the top of the page rather than the whole thing.
+    // The badge says so (amber, not ✓) and the log says by how much -- the
+    // user's next question is "how much did I lose?", and only these numbers
+    // can answer it.
+    if (truncated) {
+      console.warn(
+        `full-page-shot: the page exceeded Chrome's canvas limits and was captured up to ` +
+          `${String(canvasWidth)}x${String(canvasHeight)} device px; the delivered image is ` +
+          'the top of the page, not all of it',
+      )
+    }
+
+    const badge = badgeForCapture(delivery, truncated)
     await setBadge(tabId, badge.text, badge.color)
   } catch (error) {
     console.error('[full-page-shot]', error)

@@ -228,3 +228,24 @@ export function badgeForDelivery(result: DeliveryResult): Badge {
   if (result.succeeded.length === 0) return BADGE_FAILURE
   return BADGE_PARTIAL
 }
+
+/**
+ * The badge for the capture as a whole: delivery *and* completeness.
+ *
+ * A capture the planner had to clamp to Chrome's canvas ceilings is not a ✓.
+ * The file is real and worth keeping -- it is the top of the page, correctly
+ * stitched -- but it is not the page the user asked for, and a plain ✓ on a
+ * silently cropped screenshot is the same lie as a ✓ on a sink that failed:
+ * undetectable until they go looking for content that is not there. So a
+ * truncated-but-delivered capture takes the amber partial badge, the same
+ * "you got something, but not everything" signal a half-failed delivery gets.
+ *
+ * A truncated capture that also failed to deliver stays ✕: nothing arrived, so
+ * how complete it would have been is beside the point.
+ */
+export function badgeForCapture(result: DeliveryResult, truncated: boolean): Badge {
+  const delivery = badgeForDelivery(result)
+  if (!truncated) return delivery
+  if (delivery === BADGE_FAILURE) return BADGE_FAILURE
+  return BADGE_PARTIAL
+}

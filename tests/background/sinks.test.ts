@@ -4,6 +4,7 @@ import {
   BADGE_PARTIAL,
   BADGE_SUCCESS,
   DOWNLOAD_COMPLETION_TIMEOUT_MS,
+  badgeForCapture,
   badgeForDelivery,
   copyViaContentScript,
   deliverCapture,
@@ -350,5 +351,50 @@ describe('badgeForDelivery', () => {
     expect(badge).toEqual(BADGE_PARTIAL)
     expect(badge.text).not.toBe(BADGE_SUCCESS.text)
     expect(badge.text).not.toBe(BADGE_FAILURE.text)
+  })
+})
+
+// `truncated` used to be set by the planner and read by nobody: a page clamped
+// to Chrome's canvas ceilings was delivered cropped under a plain ✓, and the
+// spec's error table promised the user would be warned.
+describe('badgeForCapture', () => {
+  const result = (partial: Partial<DeliveryResult>): DeliveryResult => ({
+    attempted: [],
+    succeeded: [],
+    failed: [],
+    ...partial,
+  })
+
+  const delivered = result({ attempted: ['download'], succeeded: ['download'] })
+  const halfDelivered = result({
+    attempted: ['clipboard', 'download'],
+    succeeded: ['download'],
+    failed: [{ sink: 'clipboard', reason: 'Document is not focused' }],
+  })
+  const undelivered = result({
+    attempted: ['download'],
+    failed: [{ sink: 'download', reason: 'download interrupted: USER_CANCELED' }],
+  })
+
+  it('defers to the delivery badge when nothing was truncated', () => {
+    expect(badgeForCapture(delivered, false)).toEqual(BADGE_SUCCESS)
+    expect(badgeForCapture(halfDelivered, false)).toEqual(BADGE_PARTIAL)
+    expect(badgeForCapture(undelivered, false)).toEqual(BADGE_FAILURE)
+  })
+
+  // The file is real and worth keeping, but it is the top of the page rather
+  // than the page — "you got something, but not everything", which is exactly
+  // what the amber badge already means.
+  it('downgrades a fully delivered but truncated capture to partial', () => {
+    expect(badgeForCapture(delivered, true)).toEqual(BADGE_PARTIAL)
+  })
+
+  it('keeps a partial delivery partial', () => {
+    expect(badgeForCapture(halfDelivered, true)).toEqual(BADGE_PARTIAL)
+  })
+
+  // Nothing arrived, so how complete it would have been is beside the point.
+  it('keeps a failed delivery a failure', () => {
+    expect(badgeForCapture(undelivered, true)).toEqual(BADGE_FAILURE)
   })
 })
