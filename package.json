@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit && tsc --noEmit -p e2e/tsconfig.json",
-    "test:e2e": "pnpm build:e2e && playwright test"
+    "test:e2e": "pnpm build:e2e && playwright test",
+    "lint": "oxlint src tests e2e"
   },
   "license": "ISC",
   "devDependencies": {
@@ -25,7 +26,9 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "6.1.1",
+    "@vitest/coverage-v8": "4.1.11",
     "jsdom": "30.0.1",
+    "oxlint": "^1.81.0",
     "typescript": "7.0.2",
     "vite": "8.2.2",
     "vitest": "4.1.11"

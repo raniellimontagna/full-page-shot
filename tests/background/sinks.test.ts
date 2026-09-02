@@ -34,7 +34,7 @@ function stubDownloads(options: { downloadId?: number; fail?: Error } = {}): Dow
     downloadArgs: [],
     searchResult: [],
     emit: (delta) => {
-      for (const listener of [...stub.listeners]) listener(delta)
+      for (const listener of stub.listeners) listener(delta)
     },
   }
   vi.stubGlobal('chrome', {

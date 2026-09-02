@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      # No `--` before `--coverage`: pnpm forwards extra args to the script
+      # itself, so `pnpm test -- --coverage` becomes `vitest run -- --coverage`
+      # — the literal `--` makes vitest treat `--coverage` as a positional
+      # test-name filter instead of a flag, and coverage silently never runs.
+      - run: pnpm test --coverage
+      # `playwright test` launches Chromium in Playwright's new headless mode
+      # (see e2e/helpers/extension.ts: `channel: 'chromium'`, `headless: true`
+      # by default), which supports loading extensions without a display
+      # server — unlike the old headless mode, or a headed launch. None of the
+      # specs opt into `headed: true`, so no `xvfb-run` wrapper is needed here.
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
+      - uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage/lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
