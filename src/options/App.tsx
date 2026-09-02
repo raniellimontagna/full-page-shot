@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { Prefs } from '../shared/prefs'
+import type { CaptureMode, DownloadFormat, Prefs, Scale } from '../shared/prefs'
 
 interface Props {
   load: () => Promise<Prefs>
@@ -47,6 +47,89 @@ export function App({ load, save }: Props) {
       {!prefs.toClipboard && !prefs.toDownload && (
         <p role="alert">Pick at least one output, or the capture goes nowhere.</p>
       )}
+
+      <fieldset>
+        <legend>Capture mode</legend>
+        <label>
+          <input
+            type="radio"
+            name="captureMode"
+            value="full"
+            checked={prefs.captureMode === 'full'}
+            onChange={() => update({ captureMode: 'full' as CaptureMode })}
+          />
+          Full page
+        </label>
+        <label>
+          <input
+            type="radio"
+            name="captureMode"
+            value="viewport"
+            checked={prefs.captureMode === 'viewport'}
+            onChange={() => update({ captureMode: 'viewport' as CaptureMode })}
+          />
+          Visible area
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Image scale</legend>
+        <label>
+          <input
+            type="radio"
+            name="scale"
+            value="1"
+            checked={prefs.scale === 1}
+            onChange={() => update({ scale: 1 as Scale })}
+          />
+          1× (smaller files)
+        </label>
+        <label>
+          <input
+            type="radio"
+            name="scale"
+            value="2"
+            checked={prefs.scale === 2}
+            onChange={() => update({ scale: 2 as Scale })}
+          />
+          2× (Retina)
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Download format</legend>
+        <label>
+          <input
+            type="radio"
+            name="downloadFormat"
+            value="png"
+            checked={prefs.downloadFormat === 'png'}
+            onChange={() => update({ downloadFormat: 'png' as DownloadFormat })}
+          />
+          PNG
+        </label>
+        <label>
+          <input
+            type="radio"
+            name="downloadFormat"
+            value="jpeg"
+            checked={prefs.downloadFormat === 'jpeg'}
+            onChange={() => update({ downloadFormat: 'jpeg' as DownloadFormat })}
+          />
+          JPEG
+        </label>
+        <label>
+          <input
+            type="radio"
+            name="downloadFormat"
+            value="webp"
+            checked={prefs.downloadFormat === 'webp'}
+            onChange={() => update({ downloadFormat: 'webp' as DownloadFormat })}
+          />
+          WebP
+        </label>
+        <p>The clipboard always uses PNG, regardless of this setting.</p>
+      </fieldset>
     </main>
   )
 }

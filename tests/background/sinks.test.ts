@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { DEFAULT_PREFS } from '../../src/shared/prefs'
 import {
   BADGE_FAILURE,
   BADGE_PARTIAL,
@@ -223,7 +224,7 @@ describe('deliverCapture', () => {
   it('runs only the sinks the preferences ask for', async () => {
     const copy = vi.fn(async () => {})
     const download = vi.fn(async () => {})
-    const result = await deliverCapture({ toClipboard: false, toDownload: true }, { copy, download })
+    const result = await deliverCapture({ ...DEFAULT_PREFS, toClipboard: false, toDownload: true }, { copy, download })
 
     expect(copy).not.toHaveBeenCalled()
     expect(download).toHaveBeenCalledTimes(1)
@@ -234,7 +235,7 @@ describe('deliverCapture', () => {
     const copy = vi.fn(async () => {})
     const download = vi.fn(async () => {})
     const result = await deliverCapture(
-      { toClipboard: false, toDownload: false },
+      { ...DEFAULT_PREFS, toClipboard: false, toDownload: false },
       { copy, download },
     )
     expect(copy).not.toHaveBeenCalled()
@@ -250,7 +251,7 @@ describe('deliverCapture', () => {
       throw new Error('Document is not focused')
     })
     const download = vi.fn(async () => {})
-    const result = await deliverCapture({ toClipboard: true, toDownload: true }, { copy, download })
+    const result = await deliverCapture({ ...DEFAULT_PREFS, toClipboard: true, toDownload: true }, { copy, download })
 
     expect(download).toHaveBeenCalledTimes(1)
     expect(result.succeeded).toEqual(['download'])
@@ -262,7 +263,7 @@ describe('deliverCapture', () => {
     const download = vi.fn(async () => {
       throw new Error('download interrupted: FILE_NO_SPACE')
     })
-    const result = await deliverCapture({ toClipboard: true, toDownload: true }, { copy, download })
+    const result = await deliverCapture({ ...DEFAULT_PREFS, toClipboard: true, toDownload: true }, { copy, download })
 
     expect(result.succeeded).toEqual(['clipboard'])
     expect(result.failed).toEqual([
@@ -283,7 +284,7 @@ describe('deliverCapture', () => {
     )
     const download = vi.fn(async () => {})
 
-    const pending = deliverCapture({ toClipboard: true, toDownload: true }, { copy, download })
+    const pending = deliverCapture({ ...DEFAULT_PREFS, toClipboard: true, toDownload: true }, { copy, download })
     await Promise.resolve()
     expect(download).toHaveBeenCalledTimes(1)
 
@@ -294,7 +295,7 @@ describe('deliverCapture', () => {
   it('names the failing sink and its reason in the log', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     await deliverCapture(
-      { toClipboard: true, toDownload: false },
+      { ...DEFAULT_PREFS, toClipboard: true, toDownload: false },
       {
         copy: async () => {
           throw new Error('Document is not focused')

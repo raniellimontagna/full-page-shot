@@ -1,9 +1,15 @@
-import { describe, expect, it } from 'vitest'
-import { DEFAULT_PREFS, buildFilename, isCapturableUrl } from '../../src/shared/prefs'
+import { describe, expect, it, vi } from 'vitest'
+import { DEFAULT_PREFS, buildFilename, isCapturableUrl, loadPrefs } from '../../src/shared/prefs'
 
 describe('DEFAULT_PREFS', () => {
-  it('downloads and copies by default', () => {
-    expect(DEFAULT_PREFS).toEqual({ toClipboard: true, toDownload: true })
+  it('downloads and copies by default, full page, 1x, png', () => {
+    expect(DEFAULT_PREFS).toEqual({
+      toClipboard: true,
+      toDownload: true,
+      captureMode: 'full',
+      scale: 1,
+      downloadFormat: 'png',
+    })
   })
 })
 
@@ -39,5 +45,48 @@ describe('buildFilename', () => {
   it('sanitises a hostname with characters illegal in filenames', () => {
     const name = buildFilename(new Date('2026-09-01T00:00:00Z'), 'sub.example.com:8443')
     expect(name).toBe('full-page-shot/sub.example.com-8443-2026-09-01T00-00-00.png')
+  })
+})
+
+describe('loadPrefs', () => {
+  function mockStorage(stored: Record<string, unknown>) {
+    vi.stubGlobal('chrome', {
+      storage: {
+        sync: {
+          get: vi.fn(async (defaults: Record<string, unknown>) => ({ ...defaults, ...stored })),
+        },
+      },
+    })
+  }
+
+  it('returns defaults when nothing is stored', async () => {
+    mockStorage({})
+    await expect(loadPrefs()).resolves.toEqual(DEFAULT_PREFS)
+  })
+
+  it('merges a 1.0.0 upgrade — only the two booleans stored — with the new defaults', async () => {
+    mockStorage({ toClipboard: false, toDownload: true })
+    await expect(loadPrefs()).resolves.toEqual({
+      toClipboard: false,
+      toDownload: true,
+      captureMode: 'full',
+      scale: 1,
+      downloadFormat: 'png',
+    })
+  })
+
+  it('coerces invalid stored values back to defaults', async () => {
+    mockStorage({
+      captureMode: 'zoomed',
+      scale: 4,
+      downloadFormat: 'bmp',
+    })
+    await expect(loadPrefs()).resolves.toEqual({
+      toClipboard: true,
+      toDownload: true,
+      captureMode: 'full',
+      scale: 1,
+      downloadFormat: 'png',
+    })
   })
 })
