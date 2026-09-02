@@ -2143,3 +2143,63 @@ These are known unknowns, listed so they are not mistaken for oversights:
 5. **Pages using a scroll container instead of the document** (some SPAs) will capture as a single viewport. Not handled in v1; would need the content script to detect the real scrolling element.
 
 6. **jsdom may not resolve `position: sticky`** in `getComputedStyle`. If Task 4's sticky test cannot pass against real jsdom, keep `sticky` in the production selector and assert it in the e2e layer instead — do not narrow the selector to make a unit test green.
+
+---
+
+### Task 12: Move the sinks to contexts that can actually deliver
+
+**Runs BEFORE Tasks 10 and 11.** Added after Task 9's e2e suite proved the extension delivers
+nothing: `chrome.downloads` is undefined inside the offscreen document, and
+`navigator.clipboard.write()` throws `NotAllowedError: Document is not focused` there because an
+offscreen document can never hold focus. With the default preferences the clipboard throw also
+cancelled the download. Separately, `window.innerHeight` is integer-rounded (814 where the true
+height is 813.6), so at dpr 1.25 the planner sizes 1018 rows against Chrome's real 1017 and the
+stitched PNG has transparent rows at y=1017 and along its bottom edge.
+
+**Files:**
+- Modify: `src/shared/messages.ts`, `src/offscreen/index.ts`, `src/offscreen/sinks.ts` (delete or
+  reduce), `src/background/index.ts`, `src/background/capture-loop.ts`, `src/content/index.ts`,
+  `src/content/scroll-driver.ts`, `e2e/delivery.spec.ts`, `e2e/fractional-dpi.spec.ts`
+- Create: `src/background/sinks.ts`, `src/content/clipboard.ts`
+- Test: `tests/background/sinks.test.ts`, `tests/content/clipboard.test.ts`, existing suites
+
+**Interfaces:**
+- Consumes: everything from Tasks 2–9.
+- Produces:
+  - `OffscreenRequest` `finishCapture` no longer carries sink options; its success response is
+    `{ ok: true; dataUrl: string }`. `downloadPending` is removed everywhere.
+  - `ContentRequest` gains `{ type: 'copyImage'; dataUrl: string }`. It is **exempt from the
+    watchdog guard** (like `measure`) because it legitimately arrives after `restore`.
+  - `src/background/sinks.ts`: `downloadDataUrl(dataUrl, filename): Promise<'complete' | 'timeout'>`
+    using `chrome.downloads.download({ url: dataUrl, filename, saveAs: false })` and the existing
+    `onChanged`-based completion wait (moved here from the offscreen sinks, semantics unchanged:
+    timeout resolves, never rejects, and never revokes anything because there is nothing to
+    revoke). `copyViaContentScript(tabId, dataUrl): Promise<void>`.
+  - `src/content/clipboard.ts`: `copyDataUrlToClipboard(dataUrl): Promise<void>` — fetch the data
+    URL to a Blob, `navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])`.
+  - `measurePage` reads `window.visualViewport?.height ?? window.innerHeight` (and width), so
+    `viewportHeight` may be fractional. `PageMeasurements` doc comment says so.
+
+**Behavioural requirements:**
+1. After `finishCapture` returns the data URL, the service worker closes the offscreen document
+   immediately — nothing in it is in flight any more.
+2. The two sinks run via `Promise.allSettled`. One failing never prevents the other.
+3. Badge is honest about partial success: ✓ when every enabled sink succeeded, ✕ when every
+   enabled sink failed, and a distinct third state (e.g. `!` amber) when they split. Log which
+   sink failed and why at `console.warn`.
+4. The `restore` command still runs first in `finally`; `copyImage` is sent afterwards and is the
+   only post-restore command the content script accepts besides `measure`.
+5. `page-metrics`/`stitch-plan` are unchanged. Their property sweeps gain fractional
+   `viewportHeight` cases (e.g. 813.6, 720.4) and must stay at zero uncovered rows.
+6. The five `test.fail()` reproductions in `e2e/` become ordinary passing assertions. Do not
+   delete an assertion to get there; the assertions were written correctly on purpose.
+
+**Testing gates:** `pnpm test`, `pnpm typecheck`, `pnpm build`, `pnpm test:e2e` all green, with
+zero `test.fail()` left in `e2e/`. Grant clipboard permissions in the Playwright context so the
+content-script path is genuinely exercised; if real Chrome requires a user gesture that
+automation cannot supply, say so in the report — that becomes a human checklist item, not a
+reason to weaken the test.
+
+**Known risk to record, not solve:** `chrome.downloads.download` with a large `data:` URL. Blob
+URLs are unavailable in a service worker, so the data URL is the only route without another
+context. Measure the largest PNG the e2e fixtures produce and note it.
