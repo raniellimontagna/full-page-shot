@@ -6,7 +6,6 @@ import type {
   OffscreenRequest,
   OffscreenResponse,
 } from '../shared/messages'
-import type { Prefs } from '../shared/prefs'
 
 /** captureVisibleTab is quota-limited; this spacing keeps the loop under it. */
 export const CAPTURE_INTERVAL_MS = 550
@@ -18,21 +17,22 @@ export interface CaptureDeps {
   ensureOffscreen: () => Promise<void>
   /** False once the user has switched tabs or windows — the capture must stop. */
   isTabStillActive: () => Promise<boolean>
-  prefs: Prefs
-  filename: string
   delay: (ms: number) => Promise<void>
 }
 
 export interface CaptureOutcome {
   /**
-   * Forwarded verbatim from the offscreen document's `finishCapture` reply.
-   * `true` means the download had not reached a terminal state yet, so the
-   * offscreen document — which owns the blob URL Chrome is still reading
-   * from — MUST NOT be closed. `runCapture` deliberately returns this rather
-   * than acting on it: the offscreen document's lifetime is owned by whoever
-   * created it, not by the capture loop.
+   * The stitched PNG, as a data URL.
+   *
+   * `runCapture` produces the image and stops there: it neither delivers it
+   * nor closes the offscreen document. Delivery needs the user's preferences,
+   * a filename and a badge, and the document's lifetime belongs to whoever
+   * created it — none of which is this function's business. Returning the
+   * image is also what lets the caller close the offscreen document
+   * immediately, since a data URL keeps working after the document that made
+   * it is gone.
    */
-  downloadPending: boolean
+  dataUrl: string
 }
 
 function unwrap(response: ContentResponse | OffscreenResponse): void {
@@ -105,16 +105,12 @@ export async function runCapture(tabId: number, deps: CaptureDeps): Promise<Capt
       )
     }
 
-    const finished = await deps.sendToOffscreen({
-      type: 'finishCapture',
-      toClipboard: deps.prefs.toClipboard,
-      toDownload: deps.prefs.toDownload,
-      filename: deps.filename,
-    })
+    const finished = await deps.sendToOffscreen({ type: 'finishCapture' })
     if (!finished.ok) throw new Error(finished.error)
+    if (!finished.dataUrl) throw new Error('the offscreen document returned no image')
     began = false
 
-    return { downloadPending: finished.downloadPending }
+    return { dataUrl: finished.dataUrl }
   } catch (error) {
     if (began) await deps.sendToOffscreen({ type: 'abortCapture' }).catch(() => {})
     throw error

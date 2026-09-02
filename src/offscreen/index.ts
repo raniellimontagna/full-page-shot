@@ -1,5 +1,4 @@
 import type { OffscreenRequest, OffscreenResponse } from '../shared/messages'
-import { copyToClipboard, downloadBlob } from './sinks'
 import { Stitcher } from './stitcher'
 
 // Streamed across messages: the service worker sends one frame at a time,
@@ -7,36 +6,52 @@ import { Stitcher } from './stitcher'
 // than being rebuilt from an in-memory collection of frames.
 let stitcher: Stitcher | null = null
 
+/**
+ * The only shape the stitched image can leave this document in.
+ *
+ * A `Blob` does not survive `chrome.runtime` messaging and a blob URL is
+ * scoped to the document that created it — which is precisely the document the
+ * service worker is about to close. A data URL is self-contained, so nothing
+ * downstream depends on this document still being alive.
+ */
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      resolve(String(reader.result))
+    }
+    reader.onerror = () => {
+      reject(new Error('failed to read the stitched image'))
+    }
+    reader.readAsDataURL(blob)
+  })
+}
+
 async function handle(request: OffscreenRequest): Promise<OffscreenResponse> {
   switch (request.type) {
     case 'beginCapture':
       stitcher = new Stitcher(request.width, request.height)
-      return { ok: true, downloadPending: false }
+      return { ok: true }
     case 'addFrame':
       if (!stitcher) return { ok: false, error: 'no capture in progress' }
       await stitcher.addFrame(request.dataUrl, request.destY, request.sourceHeight)
-      return { ok: true, downloadPending: false }
+      return { ok: true }
     case 'finishCapture': {
       if (!stitcher) return { ok: false, error: 'no capture in progress' }
       try {
-        const blob = await stitcher.toBlob()
-        if (request.toClipboard) await copyToClipboard(blob)
-        // `downloadPending` carries whether the download had genuinely
-        // finished by the time this response is sent. The caller (the
-        // service worker) must not close this offscreen document while
-        // `downloadPending` is true — see `DownloadOutcome` in
-        // `./sinks.ts` for why resolution alone never implies "finished".
-        const downloadPending = request.toDownload
-          ? (await downloadBlob(blob, request.filename)) === 'timeout'
-          : false
-        return { ok: true, downloadPending }
+        // This document's whole job ends here: it hands back the image and
+        // keeps nothing in flight, so the service worker may close it the
+        // moment this reply lands. Delivery -- download in the service worker,
+        // clipboard in the captured tab's content script -- happens in
+        // contexts that can actually perform it.
+        return { ok: true, dataUrl: await blobToDataUrl(await stitcher.toBlob()) }
       } finally {
         stitcher = null
       }
     }
     case 'abortCapture':
       stitcher = null
-      return { ok: true, downloadPending: false }
+      return { ok: true }
     default:
       // `handle` is only ever exhaustive against the declared
       // `OffscreenRequest` union, and `noImplicitReturns` is off. A message
@@ -58,47 +73,15 @@ function assertNever(request: never): OffscreenResponse {
   return { ok: false, error: `unknown offscreen request type: ${JSON.stringify(unexpected?.type)}` }
 }
 
+// No end-to-end test hook here any more, deliberately. The suite needed the
+// stitched pixels and the only production route to them -- the sinks -- could
+// not work from this document, so a build-gated test-only message used to hand
+// the image back. `finishCapture` now returns exactly that image as part of
+// the shipped protocol, so the test-only path has nothing left to do and this
+// file carries no test-only code at all. `tests/background/e2e-hook.test.ts`
+// pins that by asserting on this file's source text, so keep it that way.
 chrome.runtime.onMessage.addListener((request: OffscreenRequest, _sender, sendResponse) => {
   if (!('type' in request)) return false
-
-  // End-to-end test hook, dropped from the production bundle by the same
-  // build-flag gate as the one in `src/background/index.ts` (verified by
-  // grepping `dist/`). It is handled here, ahead of `handle`, rather than
-  // added to `OffscreenRequest`: the shipped protocol keeps exactly the four
-  // request types it is specified to have, and `handle` stays exhaustive over
-  // them with no test-only case to reason about.
-  //
-  // It exists because the e2e suite has to read the stitched image, and the
-  // only production route to the image -- the download and clipboard sinks --
-  // does not work from an offscreen document at all (see task-9-report.md).
-  // Without this, no assertion about the *pixels* could be made.
-  if (import.meta.env.VITE_FPS_E2E === '1' && (request as { type: string }).type === 'exportCapture') {
-    void (async () => {
-      if (!stitcher) {
-        sendResponse({ ok: false, error: 'no capture in progress' })
-        return
-      }
-      try {
-        const blob = await stitcher.toBlob()
-        const dataUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader()
-          reader.onload = () => {
-            resolve(String(reader.result))
-          }
-          reader.onerror = () => {
-            reject(new Error('failed to read stitched blob'))
-          }
-          reader.readAsDataURL(blob)
-        })
-        sendResponse({ ok: true, downloadPending: false, dataUrl })
-      } catch (error) {
-        sendResponse({ ok: false, error: String(error) })
-      } finally {
-        stitcher = null
-      }
-    })()
-    return true
-  }
 
   handle(request)
     .then(sendResponse)

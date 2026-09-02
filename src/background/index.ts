@@ -15,6 +15,13 @@
 // one. See the comment in `src/content/content-script.ts`.
 import CONTENT_SCRIPT_FILE from '../content/content-script.ts?script&iife'
 import { runCapture } from './capture-loop'
+import {
+  badgeForDelivery,
+  copyViaContentScript,
+  deliverCapture,
+  downloadDataUrl,
+  BADGE_FAILURE,
+} from './sinks'
 import { buildFilename, isCapturableUrl, loadPrefs } from '../shared/prefs'
 import type {
   ContentRequest,
@@ -26,11 +33,6 @@ import type {
 // Emitted unhashed by the Rollup input registered in `vite.config.ts`, so this
 // literal is stable; verified against `dist/` on every build.
 const OFFSCREEN_PATH = 'src/offscreen/offscreen.html'
-
-/** How often to re-check whether a still-writing download has drained. */
-const DOWNLOAD_DRAIN_POLL_MS = 1_000
-/** How long to keep polling before giving up and leaving the document open. */
-const DOWNLOAD_DRAIN_TIMEOUT_MS = 60_000
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -68,13 +70,17 @@ async function ensureOffscreen(): Promise<void> {
   })
   if (existing.length > 0) return
 
-  // CLIPBOARD is required, not decorative: navigator.clipboard.write() from an
-  // offscreen document is rejected unless the document declared this reason.
+  // BLOBS, not CLIPBOARD. The document exists to draw frames onto a canvas and
+  // read that canvas back as a PNG blob, and that is now all it does. It used
+  // to declare CLIPBOARD with a comment claiming the reason was what made
+  // `navigator.clipboard.write()` work there -- which was simply false: the
+  // reason grants the API, never the focus it requires, and an offscreen
+  // document can never be focused. The copy now happens in the captured tab.
   creatingOffscreen ??= chrome.offscreen
     .createDocument({
       url: OFFSCREEN_PATH,
-      reasons: [chrome.offscreen.Reason.CLIPBOARD],
-      justification: 'Stitch captured frames into a single image and copy it to the clipboard.',
+      reasons: [chrome.offscreen.Reason.BLOBS],
+      justification: 'Stitch the captured frames into a single PNG on a canvas.',
     })
     .finally(() => {
       creatingOffscreen = null
@@ -83,44 +89,27 @@ async function ensureOffscreen(): Promise<void> {
 }
 
 /**
- * Closes the offscreen document, but only once nothing is still downloading.
+ * Closes the offscreen document.
  *
- * The offscreen document owns the blob URL `chrome.downloads` is reading the
- * PNG out of. Tearing it down mid-write truncates the file -- a corrupt
- * screenshot with no error anywhere. `downloadPending` is the offscreen
- * document telling us it never observed the download reach a terminal state,
- * so this waits it out rather than closing on faith.
+ * Unconditional, and that is the point of this whole task. The document used
+ * to run the sinks, so closing it could truncate a download reading a blob URL
+ * out of it -- hence a `downloadPending` flag on the wire and a poll over
+ * `chrome.downloads.search` before daring to close. None of that machinery
+ * could ever have run (`chrome.downloads` is undefined in an offscreen
+ * document), and none of it is needed now: the document hands back a
+ * self-contained data URL and keeps nothing in flight, so there is never
+ * anything to wait for.
  *
- * The poll deliberately queries *all* in-progress downloads rather than trying
- * to match ours by filename: a filename query that fails to match returns an
- * empty set, which is indistinguishable from "finished" and would close the
- * document exactly when it is least safe. An unrelated download can therefore
- * delay the close, which costs nothing but a hidden idle document.
- *
- * If the wait times out we leave the document open. That is the safe end of
- * the trade: a lingering offscreen document is reused by the next capture's
- * `ensureOffscreen` and closed when that one finishes cleanly, whereas a
- * premature close is unrecoverable.
+ * Idempotent, because it is called both on the happy path -- as early as
+ * possible, so a full-page canvas is not held in memory while a download runs
+ * -- and from `finally`, so no failure can strand the document.
  */
-async function releaseOffscreen(downloadPending: boolean): Promise<void> {
-  if (downloadPending && !(await waitForDownloadsToDrain())) {
-    console.warn(
-      'full-page-shot: a download was still writing after ' +
-        `${DOWNLOAD_DRAIN_TIMEOUT_MS}ms; leaving the offscreen document open so the ` +
-        'blob URL it is being read from stays valid.',
-    )
-    return
-  }
-  await chrome.offscreen.closeDocument().catch(() => {})
-}
-
-async function waitForDownloadsToDrain(): Promise<boolean> {
-  const deadline = Date.now() + DOWNLOAD_DRAIN_TIMEOUT_MS
-  for (;;) {
-    const inFlight = await chrome.downloads.search({ state: 'in_progress' })
-    if (inFlight.length === 0) return true
-    if (Date.now() >= deadline) return false
-    await delay(DOWNLOAD_DRAIN_POLL_MS)
+function makeOffscreenCloser(): () => Promise<void> {
+  let closed = false
+  return async () => {
+    if (closed) return
+    closed = true
+    await chrome.offscreen.closeDocument().catch(() => {})
   }
 }
 
@@ -159,18 +148,19 @@ export async function captureTab(tab: chrome.tabs.Tab): Promise<void> {
   const url = tab.url
   if (tabId === undefined) return
   if (!isCapturableUrl(url)) {
-    await setBadge(tabId, '✕', '#b3261e')
+    await setBadge(tabId, BADGE_FAILURE.text, BADGE_FAILURE.color)
     return
   }
 
-  let downloadPending = false
+  const closeOffscreen = makeOffscreenCloser()
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
       files: [contentScriptPath()],
     })
 
-    const outcome = await runCapture(tabId, {
+    const prefs = await loadPrefs()
+    const { dataUrl } = await runCapture(tabId, {
       sendToContent: (id, request: ContentRequest) =>
         chrome.tabs.sendMessage(id, request) as Promise<ContentResponse>,
       sendToOffscreen: (request: OffscreenRequest) =>
@@ -189,31 +179,32 @@ export async function captureTab(tab: chrome.tabs.Tab): Promise<void> {
       // removing the false aborts without pinning the capture would have
       // traded a nuisance for a wrong screenshot.
       isTabStillActive: async () => (await chrome.tabs.get(tabId)).active,
-      prefs: await loadPrefs(),
-      filename: buildFilename(new Date(), new URL(url).hostname),
       delay,
     })
 
-    downloadPending = outcome.downloadPending
-    await setBadge(tabId, '✓', '#1e8e3e')
+    // The image is a self-contained data URL and the canvas has done its job,
+    // so the document is closed here rather than after delivery: a stitched
+    // full-page canvas is tens of megabytes, and nothing below needs it.
+    await closeOffscreen()
+
+    // Both sinks run, independently, whatever either one does -- and the badge
+    // says which of those two things happened. `runCapture` has already sent
+    // `restore`, so the page is back where the user left it before a single
+    // byte is delivered.
+    const delivery = await deliverCapture(prefs, {
+      copy: () => copyViaContentScript(tabId, dataUrl),
+      download: () => downloadDataUrl(dataUrl, buildFilename(new Date(), new URL(url).hostname)),
+    })
+    const badge = badgeForDelivery(delivery)
+    await setBadge(tabId, badge.text, badge.color)
   } catch (error) {
     console.error('[full-page-shot]', error)
-    await setBadge(tabId, '✕', '#b3261e')
-    // `downloadPending` stays false: `runCapture` only throws before
-    // `finishCapture` succeeds, and a download that failed outright rejects
-    // rather than resolving, so there is no live blob URL to protect.
+    await setBadge(tabId, BADGE_FAILURE.text, BADGE_FAILURE.color)
   } finally {
     // In `finally` so no failure between here and the badge can skip it and
-    // strand the offscreen document. Deliberately after the badge: the user
-    // has their result, and this may block waiting on a slow write.
-    //
-    // `.catch` because `releaseOffscreen` can still reject: the
-    // `chrome.downloads.search` poll inside `waitForDownloadsToDrain` is
-    // unguarded, and the `onClicked` listener has no outer handler, so a downloads-API
-    // error while `downloadPending` is true would surface as an unhandled
-    // rejection. Failing to close the document is the benign outcome
-    // anyway -- the next capture reuses it.
-    await releaseOffscreen(downloadPending).catch(() => {})
+    // strand the offscreen document. A no-op on the happy path, where it has
+    // already been closed above.
+    await closeOffscreen()
   }
 }
 
@@ -232,11 +223,19 @@ chrome.action.onClicked.addListener((tab) => {
 // unnoticed.
 //
 // The hook deliberately instruments only *Chrome APIs*, never the product's
-// own functions: it wraps `captureVisibleTab` to count real frames and
-// `runtime.sendMessage` to observe the `finishCapture` reply, then calls
-// `captureTab` -- the exact function a toolbar click runs. The badge is read
-// back rather than an error being returned, because the badge is the real
-// user-visible success signal and asserting on it tests more.
+// own functions: it wraps `captureVisibleTab` to count real frames,
+// `downloads.download` to count real download requests and
+// `runtime.sendMessage` to read the stitched image out of the `finishCapture`
+// reply, then calls `captureTab` -- the exact function a toolbar click runs.
+// The badge is read back rather than an error being returned, because the
+// badge is the real user-visible success signal and asserting on it tests more.
+//
+// There is no longer a `mode` argument. It used to divert the final
+// `finishCapture` to a test-only `exportCapture` message in the offscreen
+// document, because the suite needed the stitched pixels and the sinks could
+// not produce them. `finishCapture` now returns that image in production, so
+// every capture's pixels come back through the shipped protocol and the
+// offscreen document carries no test-only code at all.
 // ---------------------------------------------------------------------------
 if (import.meta.env.VITE_FPS_E2E === '1') {
   interface CaptureProbe {
@@ -246,8 +245,13 @@ if (import.meta.env.VITE_FPS_E2E === '1') {
     frames: number
     /** Wall time of the whole capture, used to prove single-frame captures. */
     elapsedMs: number
-    /** The `downloadPending` field of the `finishCapture` reply, if any. */
-    downloadPending: boolean | null
+    /**
+     * How many times `chrome.downloads.download` was actually called. The
+     * download sink is a service-worker API call now, so "was a download even
+     * requested?" is answerable by watching Chrome rather than by trusting a
+     * flag the product reports about itself.
+     */
+    downloadRequests: number
     /** Whether the offscreen document was closed before the hook returned. */
     offscreenClosed: boolean
     /**
@@ -257,33 +261,22 @@ if (import.meta.env.VITE_FPS_E2E === '1') {
      * only report "it went red".
      */
     error: string | null
-    /** The stitched PNG as a data URL, when `mode: 'export'` was requested. */
+    /** The stitched PNG the offscreen document handed back, as a data URL. */
     dataUrl: string | null
   }
 
-  /**
-   * `mode: 'export'` swaps the outbound `finishCapture` for the offscreen
-   * document's test-only `exportCapture`, so the suite gets the stitched image
-   * back instead of it being handed to the sinks. Everything upstream of that
-   * one message -- measuring, planning, scrolling, hiding fixed elements,
-   * capturing, stitching, restoring -- is the production path untouched.
-   *
-   * `mode: 'deliver'` leaves the message alone and exercises the real sinks.
-   */
-  const probeCapture = async (
-    targetUrl: string,
-    mode: 'deliver' | 'export' = 'deliver',
-  ): Promise<CaptureProbe> => {
+  const probeCapture = async (targetUrl: string): Promise<CaptureProbe> => {
     const tab = (await chrome.tabs.query({})).find((candidate) => candidate.url === targetUrl)
     if (!tab || tab.id === undefined) throw new Error(`no tab at ${targetUrl}`)
 
     const realCapture = chrome.tabs.captureVisibleTab
     const realSend = chrome.runtime.sendMessage
     const realClose = chrome.offscreen.closeDocument
+    const realDownload = chrome.downloads.download
     const realConsoleError = console.error
 
     let frames = 0
-    let downloadPending: boolean | null = null
+    let downloadRequests = 0
     let dataUrl: string | null = null
     let offscreenClosed = false
     let error: string | null = null
@@ -291,6 +284,7 @@ if (import.meta.env.VITE_FPS_E2E === '1') {
     const tabsApi = chrome.tabs as unknown as Record<string, unknown>
     const runtimeApi = chrome.runtime as unknown as Record<string, unknown>
     const offscreenApi = chrome.offscreen as unknown as Record<string, unknown>
+    const downloadsApi = chrome.downloads as unknown as Record<string, unknown>
 
     tabsApi.captureVisibleTab = (...args: unknown[]): unknown => {
       frames += 1
@@ -298,14 +292,11 @@ if (import.meta.env.VITE_FPS_E2E === '1') {
     }
     runtimeApi.sendMessage = (...args: unknown[]): unknown => {
       const request = args[0] as { type?: string } | undefined
-      const isFinish = request?.type === 'finishCapture'
-      const outbound = isFinish && mode === 'export' ? [{ type: 'exportCapture' }, ...args.slice(1)] : args
-      const result = (realSend as (...a: unknown[]) => unknown).apply(chrome.runtime, outbound)
-      if (isFinish && result instanceof Promise) {
+      const result = (realSend as (...a: unknown[]) => unknown).apply(chrome.runtime, args)
+      if (request?.type === 'finishCapture' && result instanceof Promise) {
         void result.then((response: unknown) => {
-          const reply = response as { ok?: boolean; downloadPending?: boolean; dataUrl?: string }
-          downloadPending = reply?.ok === true ? (reply.downloadPending ?? null) : null
-          dataUrl = reply?.dataUrl ?? null
+          const reply = response as { ok?: boolean; dataUrl?: string }
+          dataUrl = reply?.ok === true ? (reply.dataUrl ?? null) : null
         })
       }
       return result
@@ -313,6 +304,10 @@ if (import.meta.env.VITE_FPS_E2E === '1') {
     offscreenApi.closeDocument = (...args: unknown[]): unknown => {
       offscreenClosed = true
       return (realClose as (...a: unknown[]) => unknown).apply(chrome.offscreen, args)
+    }
+    downloadsApi.download = (...args: unknown[]): unknown => {
+      downloadRequests += 1
+      return (realDownload as (...a: unknown[]) => unknown).apply(chrome.downloads, args)
     }
 
     console.error = (...args: unknown[]): void => {
@@ -327,6 +322,7 @@ if (import.meta.env.VITE_FPS_E2E === '1') {
       tabsApi.captureVisibleTab = realCapture
       runtimeApi.sendMessage = realSend
       offscreenApi.closeDocument = realClose
+      downloadsApi.download = realDownload
       console.error = realConsoleError
     }
     const elapsedMs = Date.now() - startedAt
@@ -335,7 +331,7 @@ if (import.meta.env.VITE_FPS_E2E === '1') {
       badge: await chrome.action.getBadgeText({ tabId: tab.id }),
       frames,
       elapsedMs,
-      downloadPending,
+      downloadRequests,
       offscreenClosed,
       dataUrl,
       error,

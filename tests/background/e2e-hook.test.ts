@@ -20,17 +20,15 @@ describe('test hooks are excluded from the production build', () => {
     expect(backgroundSource).toContain('__fpsCaptureForTest')
   })
 
-  it('gates the offscreen export hook on the e2e build flag', () => {
-    expect(offscreenSource).toContain("import.meta.env.VITE_FPS_E2E === '1'")
-    expect(offscreenSource).toContain('exportCapture')
-  })
-
-  it('keeps the test-only request out of the shipped offscreen protocol', () => {
-    // `exportCapture` is handled ahead of `handle()` rather than added to
-    // `OffscreenRequest`, so the shipped message contract keeps exactly the
-    // four request types it is specified to have and `handle` stays
-    // exhaustive over them.
-    expect(offscreenSource).not.toContain("case 'exportCapture'")
+  it('leaves no test-only code in the offscreen document at all', () => {
+    // Stronger than gating it. The offscreen document used to carry a
+    // build-gated `exportCapture` message, because the end-to-end suite needed
+    // the stitched pixels and the sinks -- which lived there and could not
+    // work there -- were the only other route to them. `finishCapture` now
+    // returns that image as part of the shipped protocol, so there is nothing
+    // for a test-only path to do and none should grow back.
+    expect(offscreenSource).not.toContain('VITE_FPS_E2E')
+    expect(offscreenSource).not.toContain('exportCapture')
   })
 
   it('gates the e2e host permission on the same flag', () => {

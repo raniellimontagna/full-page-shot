@@ -1,4 +1,5 @@
 import type { ContentRequest, ContentResponse } from '../shared/messages'
+import { copyDataUrlToClipboard } from './clipboard'
 import { hideFixedElements, restoreFixedElements } from './fixed-elements'
 import { measurePage, scrollToStep } from './scroll-driver'
 
@@ -58,6 +59,21 @@ async function handle(request: ContentRequest): Promise<ContentResponse> {
     return { ok: true }
   }
 
+  // The clipboard sink. It lives here because this is a focused document and
+  // the offscreen document -- where it used to live, failing every time -- can
+  // never be one.
+  //
+  // Handled above the guard below, alongside `restore`, because it arrives
+  // *after* `restore` by design: the page is put back before anything is
+  // delivered, so `originalScrollY` is null and the guard would reject every
+  // single copy with "capture abandoned". It also does not arm the watchdog:
+  // it neither starts nor continues a capture, and there is no page state left
+  // for a watchdog to protect.
+  if (request.type === 'copyImage') {
+    await copyDataUrlToClipboard(request.dataUrl)
+    return { ok: true }
+  }
+
   // The watchdog has already fired: this page is no longer in a capture, and
   // `originalScrollY === null` is how it knows -- only `measure` sets it, and
   // only `restore`/`restorePage` clear it. Obeying `hideFixed`/`scrollTo` from
@@ -73,14 +89,18 @@ async function handle(request: ContentRequest): Promise<ContentResponse> {
   // check at every call site.
   //
   // `measure` is exempt: it is what starts a capture, so a null latch there is
-  // the normal case, not an abandoned one.
+  // the normal case, not an abandoned one. `copyImage` is exempt too, and has
+  // already returned above.
   //
-  // This is not a disaster-only path. `finishCapture` does not respond until
-  // the download reaches a terminal state, and `restore` is sent only after
-  // that -- so a user with "Ask where to save each file" enabled trips the
-  // watchdog roughly ten seconds after the final frame on every capture. That
-  // instance is harmless (no commands follow), but the guard has to be correct
-  // in ordinary use, not just in eviction.
+  // This used to be reachable in ordinary use, not just after an eviction:
+  // `finishCapture` ran the download and did not respond until it reached a
+  // terminal state, with `restore` sent only afterwards, so a user with "Ask
+  // where to save each file" enabled sat on an open native dialog and tripped
+  // the watchdog on every capture. Delivery now happens after `restore`, which
+  // disarms the watchdog, and the one command that follows it (`copyImage`)
+  // neither arms it nor is subject to this guard -- so the dialog can stay
+  // open as long as the user likes. The guard remains for the case it was
+  // written for: an evicted service worker that never sends `restore` at all.
   if (request.type !== 'measure' && originalScrollY === null) {
     return { ok: false, error: 'capture abandoned; page already restored' }
   }

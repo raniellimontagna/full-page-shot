@@ -4,6 +4,9 @@ import type { CaptureDeps } from '../../src/background/capture-loop'
 import type { ContentRequest, OffscreenRequest } from '../../src/shared/messages'
 import type { PageMeasurements } from '../../src/core/types'
 
+/** Stands in for the stitched PNG the offscreen document hands back. */
+const STITCHED = 'data:image/png;base64,STITCHED'
+
 const measurements: PageMeasurements = {
   scrollWidth: 1000,
   scrollHeight: 2000,
@@ -34,7 +37,9 @@ function makeDeps(overrides: Partial<CaptureDeps> = {}) {
     sendToOffscreen: vi.fn(async (request: OffscreenRequest) => {
       offscreenCalls.push(request.type)
       events.push(`offscreen:${request.type}`)
-      return { ok: true as const, downloadPending: false }
+      return request.type === 'finishCapture'
+        ? { ok: true as const, dataUrl: STITCHED }
+        : { ok: true as const }
     }),
     captureVisibleTab: vi.fn(async () => {
       events.push('capture')
@@ -42,8 +47,6 @@ function makeDeps(overrides: Partial<CaptureDeps> = {}) {
     }),
     ensureOffscreen: vi.fn(async () => {}),
     isTabStillActive: vi.fn(async () => true),
-    prefs: { toClipboard: true, toDownload: true },
-    filename: 'full-page-shot/example.com-2026-09-01T00-00-00.png',
     delay: vi.fn(async () => {}),
     ...overrides,
   }
@@ -126,22 +129,42 @@ describe('runCapture', () => {
     expect(contentCalls.at(-1)?.type).toBe('restore')
   })
 
-  // The offscreen document owns the blob URL the download is reading from, so
-  // closing it while the download is still writing truncates the file. That
-  // decision belongs to the caller, which means `runCapture` has to hand the
-  // flag back rather than swallow it.
-  it('reports downloadPending: false so the caller may close the offscreen document', async () => {
+  // `runCapture` produces the image and stops. It does not deliver it, does not
+  // know the user's preferences and does not touch the offscreen document's
+  // lifetime -- so the image has to come back out for the caller to use.
+  it('returns the stitched image from finishCapture', async () => {
     const { deps } = makeDeps()
-    await expect(runCapture(1, deps)).resolves.toEqual({ downloadPending: false })
+    await expect(runCapture(1, deps)).resolves.toEqual({ dataUrl: STITCHED })
   })
 
-  it('propagates downloadPending: true from finishCapture', async () => {
+  it('asks the offscreen document to finish without any sink options', async () => {
+    // Delivery moved out of the offscreen document entirely, so nothing about
+    // the clipboard, the download or the filename belongs on this message any
+    // more. A stray option here would mean a second implementation of the
+    // sinks had grown back in the one context that cannot run them.
+    const sent: OffscreenRequest[] = []
     const { deps } = makeDeps({
-      sendToOffscreen: vi.fn(async (request: OffscreenRequest) => ({
-        ok: true as const,
-        downloadPending: request.type === 'finishCapture',
-      })),
+      sendToOffscreen: vi.fn(async (request: OffscreenRequest) => {
+        sent.push(request)
+        return request.type === 'finishCapture'
+          ? { ok: true as const, dataUrl: STITCHED }
+          : { ok: true as const }
+      }),
     })
-    await expect(runCapture(1, deps)).resolves.toEqual({ downloadPending: true })
+    await runCapture(1, deps)
+    expect(sent.at(-1)).toEqual({ type: 'finishCapture' })
+  })
+
+  // `ok: true` with no image is a broken offscreen document, not a success.
+  // Silently returning `undefined` here would hand the sinks an empty data URL
+  // and deliver a corrupt file under a ✓ badge.
+  it('fails when finishCapture reports success without an image', async () => {
+    const { deps, contentCalls } = makeDeps({
+      sendToOffscreen: vi.fn(async (request: OffscreenRequest) =>
+        request.type === 'finishCapture' ? { ok: true as const } : { ok: true as const },
+      ),
+    })
+    await expect(runCapture(1, deps)).rejects.toThrow(/returned no image/)
+    expect(contentCalls.at(-1)?.type).toBe('restore')
   })
 })

@@ -41,6 +41,34 @@ function send(listener: Listener, request: ContentRequest): Promise<ContentRespo
   })
 }
 
+/**
+ * jsdom has neither `ClipboardItem` nor `navigator.clipboard`. Stubbing them
+ * lets the real `copyDataUrlToClipboard` run, so these tests exercise the
+ * actual path a `copyImage` message takes rather than a mock of it.
+ */
+function stubClipboard(options: { write?: () => Promise<void> } = {}): { written: unknown[] } {
+  const written: unknown[] = []
+  vi.stubGlobal(
+    'ClipboardItem',
+    class {
+      constructor(public data: Record<string, Blob>) {}
+    },
+  )
+  vi.stubGlobal('fetch', async () => ({
+    blob: async () => new Blob([new Uint8Array([1])], { type: 'image/png' }),
+  }))
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: {
+      write: vi.fn(async (items: unknown[]) => {
+        written.push(...items)
+        if (options.write) await options.write()
+      }),
+    },
+  })
+  return { written }
+}
+
 function stubScrollPosition(y: number): void {
   Object.defineProperty(window, 'scrollY', { configurable: true, get: () => y })
 }
@@ -96,6 +124,79 @@ describe('content script message handler', () => {
     await import('../../src/content/index')
 
     expect(addListener).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('content script clipboard sink', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    Reflect.deleteProperty(navigator, 'clipboard')
+    clearInjectionSentinel()
+  })
+
+  // The single most breakable thing about moving the clipboard here. Delivery
+  // happens *after* the page has been put back, so `originalScrollY` is null
+  // by the time `copyImage` arrives and the post-restore guard -- which exists
+  // to refuse `scrollTo`/`hideFixed` from an abandoned capture -- would
+  // otherwise reject every copy the extension ever makes with "capture
+  // abandoned; page already restored".
+  it('accepts copyImage after the page has already been restored', async () => {
+    const { listener } = await loadContentScript()
+    const { written } = stubClipboard()
+    vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+    stubScrollPosition(500)
+
+    await send(listener, { type: 'measure' })
+    await send(listener, { type: 'restore' })
+
+    const response = await send(listener, {
+      type: 'copyImage',
+      dataUrl: 'data:image/png;base64,AAAA',
+    })
+    expect(response).toEqual({ ok: true })
+    expect(written).toHaveLength(1)
+  })
+
+  it('accepts copyImage on a page that was never in a capture', async () => {
+    // The watchdog case: the service worker was evicted, the page restored
+    // itself, and a later capture's copy must still be able to land.
+    const { listener } = await loadContentScript()
+    const { written } = stubClipboard()
+    await send(listener, { type: 'copyImage', dataUrl: 'data:image/png;base64,AAAA' })
+    expect(written).toHaveLength(1)
+  })
+
+  it('reports a refused clipboard write back to the service worker', async () => {
+    const { listener } = await loadContentScript()
+    stubClipboard({ write: () => Promise.reject(new Error('Document is not focused')) })
+    const response = await send(listener, {
+      type: 'copyImage',
+      dataUrl: 'data:image/png;base64,AAAA',
+    })
+    expect(response).toEqual({ ok: false, error: expect.stringContaining('Document is not focused') })
+  })
+
+  // `copyImage` is the last message of a capture, sent after `restore` has
+  // deliberately disarmed the watchdog. Re-arming it here would leave a timer
+  // running on every page the extension has ever captured, to fire ten seconds
+  // later and scroll a page that is no longer in a capture at all.
+  it('does not re-arm the restore watchdog', async () => {
+    vi.useFakeTimers()
+    const { listener, watchdogMs } = await loadContentScript()
+    stubClipboard()
+    const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+    stubScrollPosition(500)
+
+    await send(listener, { type: 'measure' })
+    await send(listener, { type: 'restore' })
+    scrollTo.mockClear()
+
+    await send(listener, { type: 'copyImage', dataUrl: 'data:image/png;base64,AAAA' })
+    vi.advanceTimersByTime(watchdogMs * 2)
+
+    expect(scrollTo).not.toHaveBeenCalled()
   })
 })
 
