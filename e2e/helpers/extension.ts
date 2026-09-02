@@ -91,6 +91,33 @@ export async function launchExtension(options: LaunchOptions = {}): Promise<Exte
     ],
   })
 
+  // Undo Playwright's own download interception.
+  //
+  // Playwright sets CDP `Browser.setDownloadBehavior` to `allowAndName` for
+  // every context it creates, which redirects *all* downloads -- including
+  // ones an extension starts through `chrome.downloads` -- into its artifacts
+  // folder under a GUID name, discarding both the profile's download directory
+  // and the filename the extension asked for. The public API cannot turn that
+  // off: `acceptDownloads: false` means `deny`, which cancels downloads
+  // outright. `behavior: 'default'` hands naming and placement back to Chrome,
+  // which is what makes the `download.default_directory` written above take
+  // effect and what lets this suite assert on the real
+  // `full-page-shot/<host>-<stamp>.png` the extension requested.
+  //
+  // The session is deliberately not detached: the override lives for as long
+  // as the session does. None of this was noticed before because, until the
+  // download sink moved into the service worker, no capture ever downloaded
+  // anything at all.
+  const cdpTarget = context.pages()[0] ?? (await context.newPage())
+  const cdp = await context.newCDPSession(cdpTarget)
+  await cdp.send('Browser.setDownloadBehavior', { behavior: 'default' })
+
+  // Both, at launch, for the fixture origin. `clipboard-write` is what the
+  // content script's `navigator.clipboard.write()` needs, and `clipboard-read`
+  // is what lets a test read the image back out again -- an assertion that the
+  // capture reached the system clipboard, not merely that no error was thrown.
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: BASE_URL })
+
   return {
     context,
     downloadDir,
@@ -124,10 +151,21 @@ export interface PageFacts {
   devicePixelRatio: number
 }
 
+/**
+ * The page facts every geometric assertion in this suite is derived from.
+ *
+ * The viewport is read from `visualViewport`, with the same fallback the
+ * product uses, because that is the measurement the planner works from. It is
+ * deliberately not `innerWidth`/`innerHeight`: Chrome rounds those to integers
+ * (814 for a real 813.6), and a test that recomputed the expected frame height
+ * from the rounded number would agree with a planner fed the rounded number
+ * and be blind to precisely the defect `fractional-dpi.spec.ts` exists to
+ * catch. `viewportWidth`/`viewportHeight` may therefore be fractional.
+ */
 export function readPageFacts(page: Page): Promise<PageFacts> {
   return page.evaluate(() => ({
-    viewportWidth: window.innerWidth,
-    viewportHeight: window.innerHeight,
+    viewportWidth: window.visualViewport?.width ?? window.innerWidth,
+    viewportHeight: window.visualViewport?.height ?? window.innerHeight,
     scrollHeight: document.documentElement.scrollHeight,
     devicePixelRatio: window.devicePixelRatio,
   }))
@@ -137,34 +175,34 @@ export interface CaptureProbe {
   badge: string
   frames: number
   elapsedMs: number
-  downloadPending: boolean | null
+  /** How many times `chrome.downloads.download` was actually called. */
+  downloadRequests: number
   offscreenClosed: boolean
-  /** The stitched PNG as a data URL, when captured with `mode: 'export'`. */
+  /** The stitched PNG the offscreen document handed back, as a data URL. */
   dataUrl: string | null
   error: string | null
 }
 
 /**
- * Runs the same code path a real toolbar click runs.
+ * Runs the same code path a real toolbar click runs, all the way through the
+ * sinks the user's stored preferences select.
  *
- * `mode: 'export'` diverts only the final `finishCapture` message, so the
- * stitched image comes back to the test instead of going to the sinks; every
- * earlier step is production code. `mode: 'deliver'` runs the sinks for real.
+ * There is no `mode` any more. It used to divert the final `finishCapture` to
+ * a test-only message so the suite could see the stitched image at all, since
+ * neither sink worked. `finishCapture` now returns that image in production,
+ * so every capture reports its pixels and what to deliver is decided purely by
+ * `setPrefs` -- the same switch a user has.
  */
-export async function runCapture(
-  context: BrowserContext,
-  page: Page,
-  mode: 'deliver' | 'export' = 'export',
-): Promise<CaptureProbe> {
+export async function runCapture(context: BrowserContext, page: Page): Promise<CaptureProbe> {
   const worker = await serviceWorker(context)
   return (await worker.evaluate(
-    async ({ url, how }) =>
+    async (url) =>
       await (
         globalThis as unknown as {
-          __fpsCaptureForTest: (u: string, m: string) => Promise<CaptureProbe>
+          __fpsCaptureForTest: (u: string) => Promise<CaptureProbe>
         }
-      ).__fpsCaptureForTest(url, how),
-    { url: page.url(), how: mode },
+      ).__fpsCaptureForTest(url),
+    page.url(),
   )) as CaptureProbe
 }
 
@@ -219,8 +257,10 @@ export interface DeliveredFile {
  * the suite lie.
  *
  * `immediate` makes this a single pass with no polling. That is what turns
- * "the file is complete the moment `finishCapture` reports `downloadPending:
- * false`" into a real assertion instead of something a retry loop papers over.
+ * "the file is already complete the moment the capture reports success" into a
+ * real assertion instead of something a retry loop papers over: the download
+ * sink does not resolve until Chrome reports a terminal state, so by the time
+ * the badge is set the bytes are on disk.
  */
 export async function newDownload(
   downloadDir: string,

@@ -30,14 +30,12 @@ test.beforeAll(async () => {
   harness = await launchExtension()
   context = harness.context
   decoder = await decoderPage(context)
-  // Every capture in this file runs in `export` mode, which diverts the final
-  // `finishCapture` message so the stitched image comes back to the test.
-  // That is not a shortcut: BOTH delivery sinks are broken in the shipped
-  // build (see `delivery.spec.ts` and task-9-report.md), so there is no
-  // working production route from the canvas to a file this suite could read.
-  // Everything up to that last message -- measure, plan, scroll, hide fixed
-  // elements, capture, stitch, restore -- is production code, and that is
-  // exactly what the assertions in this file are about.
+  // Both sinks off. Every capture still reports its stitched image -- that is
+  // part of the shipped protocol now, not a test hook -- so these tests get
+  // the pixels without writing a file or touching the system clipboard on
+  // every one of them. Delivery has its own file (`delivery.spec.ts`); what
+  // this file asserts is everything before it: measure, plan, scroll, hide
+  // fixed elements, capture, stitch, restore.
   await setPrefs(context, { toClipboard: false, toDownload: false })
 })
 

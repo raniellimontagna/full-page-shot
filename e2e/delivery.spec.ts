@@ -13,35 +13,32 @@ import { pngSize } from './helpers/image'
 
 /**
  * ============================================================================
- * READ THIS BEFORE TOUCHING A `test.fail()` IN THIS FILE.
+ * Every capture here runs the real sinks, selected by the same stored
+ * preferences a user sets in the options page.
  *
- * Every capture here runs in `deliver` mode, so the real sinks in
- * `src/offscreen/sinks.ts` run. Three of the four tests are marked
- * `test.fail()` because they are standing reproductions of two defects this
- * suite found on its first run against a real browser:
+ * Three of these four tests were standing `test.fail()` reproductions of the
+ * defects Task 9 found on its first run against a real browser:
  *
- *  1. `chrome.downloads` is `undefined` inside the offscreen document, so
- *     `downloadBlob` throws `TypeError: Cannot read properties of undefined
- *     (reading 'download')` before a byte is written. Offscreen documents get
- *     `chrome.runtime` and little else; privileged APIs have to be called from
- *     the service worker. The service worker's own `chrome.downloads.search`
- *     works fine -- it is only the offscreen half that is dead.
+ *  1. `chrome.downloads` is `undefined` inside an offscreen document, so the
+ *     download sink threw `TypeError: Cannot read properties of undefined
+ *     (reading 'download')` before a byte was written. The download now runs
+ *     in the service worker, which has the API for real.
  *
  *  2. `navigator.clipboard.write()` throws `NotAllowedError: Document is not
- *     focused` inside the offscreen document. An offscreen document has no
- *     window and can never be focused, and `reasons: [CLIPBOARD]` grants the
- *     API without lifting the focus requirement. Verified against a headed
- *     browser, and against a control: an ordinary page in the same browser
- *     reports `document.hasFocus() === true` and writes the clipboard fine.
+ *     focused` inside an offscreen document, which has no window and can never
+ *     be focused (`reasons: [CLIPBOARD]` grants the API, not the focus). The
+ *     copy now runs in the captured tab's content script, a focused document.
  *
- * `test.fail()` does not weaken the assertions -- they are written exactly as
- * they should be once the sinks work. Playwright reports an *unexpected pass*
- * as a failure, so the moment either defect is fixed this file goes red and
- * whoever fixed it removes the marker. Do not delete these tests to get green;
- * deleting them is how the defect ships.
+ *  3. The two ran in sequence with no isolation, so the clipboard throw
+ *     cancelled the download and the *shipped defaults* delivered nothing at
+ *     all. They now run under `Promise.allSettled`.
+ *
+ * The assertions are unchanged from when they were expected failures -- they
+ * were always written for a working delivery layer. Only the `test.fail()`
+ * markers are gone. If one of these goes red, delivery is broken again; do not
+ * reach for a marker.
  * ============================================================================
  */
-
 const BOTTOM_BAND_FIXTURE = 'non-multiple.html'
 
 let harness: ExtensionHarness
@@ -58,32 +55,29 @@ test.afterEach(async () => {
 
 async function capturePage(): Promise<{ page: Page; probe: Awaited<ReturnType<typeof runCapture>> }> {
   const page = await openFixture(context, BOTTOM_BAND_FIXTURE)
-  const probe = await runCapture(context, page, 'deliver')
+  const probe = await runCapture(context, page)
   return { page, probe }
 }
 
-test('downloadPending is false when the request did not ask for a download', async () => {
+test('no sink runs when the preferences ask for neither', async () => {
   await setPrefs(context, { toClipboard: false, toDownload: false })
   const before = await listDownloads(harness.downloadDir)
   const { probe } = await capturePage()
 
   expect(probe.error).toBeNull()
+  // Every enabled sink succeeded, vacuously: the capture did everything it was
+  // asked to do.
   expect(probe.badge).toBe('✓')
-  // The field only ever means "a download is still writing". With no download
-  // requested there is nothing to wait for, so it must be false -- if it could
-  // be true here the service worker would keep the offscreen document open
-  // forever waiting on a download that was never started.
-  expect(probe.downloadPending).toBe(false)
-  // And the offscreen document is closed immediately, because nothing is
-  // reading a blob URL out of it.
+  // Watched at the Chrome API, not inferred from the absence of a file: the
+  // download sink was never even asked to run.
+  expect(probe.downloadRequests).toBe(0)
+  // And the offscreen document is closed immediately, because nothing is left
+  // in flight there once it has handed back the image.
   expect(probe.offscreenClosed).toBe(true)
   expect(await listDownloads(harness.downloadDir)).toEqual(before)
 })
 
-test('a requested download is complete on disk before finishCapture resolves', async () => {
-  // Scoped inside the body on purpose: a file-scope `test.fail()` applies to
-  // every test in the file, including ones declared above it.
-  test.fail(true, 'chrome.downloads is undefined in the offscreen document')
+test('a requested download is complete on disk before the capture reports success', async () => {
   await setPrefs(context, { toClipboard: false, toDownload: true })
   const seen = await listDownloads(harness.downloadDir)
   const { page, probe } = await capturePage()
@@ -91,17 +85,19 @@ test('a requested download is complete on disk before finishCapture resolves', a
 
   expect(probe.error).toBeNull()
   expect(probe.badge).toBe('✓')
-  // `false` is the offscreen document saying the download reached a terminal
-  // state before it replied -- the whole point of `DownloadOutcome`.
-  expect(probe.downloadPending).toBe(false)
-  // And on that basis the service worker closed the document, which tears down
-  // the blob URL Chrome was reading the PNG out of.
+  // Exactly one download was requested, of the whole capture -- not one per
+  // frame, and not none.
+  expect(probe.downloadRequests).toBe(1)
+  // And the offscreen document was closed while that download was still being
+  // written, which is now harmless: `chrome.downloads` is reading a data URL
+  // held by the service worker, not a blob URL owned by a document that has
+  // just been torn down.
   expect(probe.offscreenClosed).toBe(true)
 
-  // `immediate: true` -- a single pass, no polling. If closing the offscreen
-  // document truncated the write, or if `downloadPending: false` was reported
-  // before the bytes landed, the file is absent or has no IEND chunk right
-  // now, and no retry loop hides it.
+  // `immediate: true` -- a single pass, no polling. The download sink does not
+  // resolve until Chrome reports a terminal state, so if the badge went green
+  // before the bytes landed the file is absent or has no IEND chunk right now,
+  // and no retry loop hides it.
   const delivered = await newDownload(harness.downloadDir, seen, { immediate: true })
   const steps = Math.ceil(facts.scrollHeight / facts.viewportHeight)
   const frameHeight = Math.round(facts.viewportHeight * facts.devicePixelRatio)
@@ -112,16 +108,16 @@ test('a requested download is complete on disk before finishCapture resolves', a
 })
 
 test('the clipboard holds the capture after a real capture', async () => {
-  test.fail(true, 'navigator.clipboard.write() cannot work from an offscreen document')
   await setPrefs(context, { toClipboard: true, toDownload: false })
   const { page, probe } = await capturePage()
 
   expect(probe.error).toBeNull()
   expect(probe.badge).toBe('✓')
+  // Nothing was written to disk -- this is the clipboard sink on its own.
+  expect(probe.downloadRequests).toBe(0)
 
-  await context.grantPermissions(['clipboard-read', 'clipboard-write'], {
-    origin: 'http://localhost:5199',
-  })
+  // Read back from the system clipboard through the page, so the assertion is
+  // about what a user would paste, not about the extension's own report.
   const clipboard = await page.evaluate(async () => {
     const items = await navigator.clipboard.read()
     const item = items[0]
@@ -134,17 +130,27 @@ test('the clipboard holds the capture after a real capture', async () => {
 })
 
 test('the shipped default preferences deliver a capture', async () => {
-  test.fail(true, 'both sinks are broken, so the shipped defaults deliver nothing')
   // The single most user-visible statement in this file: with `DEFAULT_PREFS`
   // (clipboard *and* download both on), does clicking the button produce
-  // anything at all? Today it does not -- the clipboard write throws first and
-  // takes the download down with it, because `finishCapture` runs the sinks in
-  // sequence with no isolation between them.
+  // anything at all? It used not to -- the clipboard write threw first and took
+  // the download down with it, so a default install produced nothing and a red
+  // badge.
   const seen = await listDownloads(harness.downloadDir)
   await setPrefs(context, { toClipboard: true, toDownload: true })
-  const { probe } = await capturePage()
+  const { page, probe } = await capturePage()
 
   expect(probe.error).toBeNull()
+  // ✓, not the amber partial badge: both sinks delivered.
   expect(probe.badge).toBe('✓')
-  await newDownload(harness.downloadDir, seen)
+  const delivered = await newDownload(harness.downloadDir, seen)
+
+  // Both sinks, from one capture, holding the same image.
+  const clipboardBytes = await page.evaluate(async () => {
+    const items = await navigator.clipboard.read()
+    const item = items[0]
+    if (!item) return 0
+    return (await item.getType('image/png')).size
+  })
+  expect(clipboardBytes).toBeGreaterThan(1_000)
+  expect(pngSize(delivered.bytes).height).toBeGreaterThan(0)
 })

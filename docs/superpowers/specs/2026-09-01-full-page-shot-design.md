@@ -104,7 +104,7 @@ dispara a captura diretamente.
 | `scroll-driver` | Rola para o passo N e espera estabilização (lazy-load, animação) | DOM | parcial |
 | `capture-loop` | Sequencia os passos, aplica throttle, encaminha frames | APIs do Chrome | não |
 | `stitcher` | Frames + metadados → blob PNG | canvas | sim |
-| `sinks` | Entrega via `chrome.downloads` e/ou clipboard | APIs do Chrome | não |
+| `sinks` | Entrega: `chrome.downloads` no service worker, clipboard no content script | APIs do Chrome | parcial (orquestração e badge são puros) |
 
 `page-metrics` e `stitcher` concentram a corretude aritmética da captura e são puros:
 cobertos por teste unitário. `fixed-elements` e `scroll-driver` são onde a captura quebra
@@ -115,8 +115,10 @@ visualmente; isolá-los permite iterar neles sem tocar no resto.
 1. Usuário clica no ícone da action ou usa o atalho de teclado.
 2. Service worker valida a URL da aba ativa. Se restrita, aborta aqui.
 3. Service worker injeta o content script.
-4. Content script devolve as medidas: `scrollWidth`, `scrollHeight`, `innerWidth`,
-   `innerHeight`, `devicePixelRatio`, posição de scroll atual.
+4. Content script devolve as medidas: `scrollWidth`, `scrollHeight`, largura e altura do
+   `visualViewport` (fracionárias — `innerWidth`/`innerHeight` são arredondados pelo Chrome
+   e o arredondamento deixava linhas transparentes em DPR fracionário),
+   `devicePixelRatio`, posição de scroll atual.
 5. `page-metrics` calcula os passos e valida contra o limite de área do canvas.
 6. Service worker garante o offscreen document criado.
 7. Loop, por passo:
@@ -124,8 +126,12 @@ visualmente; isolá-los permite iterar neles sem tocar no resto.
    - Service worker chama `captureVisibleTab`, respeitando o throttle.
    - O frame é enviado ao offscreen document imediatamente.
 8. Content script restaura elementos fixos e o scroll original.
-9. Offscreen document fecha o canvas em blob e executa os sinks configurados.
-10. Badge na action confirma o resultado.
+9. Offscreen document fecha o canvas em blob e devolve a imagem como data URL ao service
+   worker, que fecha o documento em seguida — nada mais fica pendente lá.
+10. Service worker executa os sinks configurados **em paralelo** (`Promise.allSettled`):
+    download nele mesmo, clipboard via mensagem `copyImage` ao content script.
+11. Badge na action confirma o resultado, distinguindo sucesso total, falha total e
+    sucesso parcial.
 
 ### Frames vão para o offscreen um a um
 
