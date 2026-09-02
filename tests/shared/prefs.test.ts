@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import { DEFAULT_PREFS, buildFilename, isCapturableUrl, loadPrefs } from '../../src/shared/prefs'
+import {
+  DEFAULT_PREFS,
+  buildFilename,
+  isCapturableUrl,
+  loadPrefs,
+  resolveCaptureMode,
+} from '../../src/shared/prefs'
 
 describe('DEFAULT_PREFS', () => {
   it('downloads and copies by default, full page, 1x, png', () => {
@@ -37,14 +43,63 @@ describe('isCapturableUrl', () => {
 })
 
 describe('buildFilename', () => {
+  const full = { mode: 'full', format: 'png' } as const
+
   it('includes the hostname and a sortable timestamp', () => {
-    const name = buildFilename(new Date('2026-09-01T14:05:09Z'), 'example.com')
+    const name = buildFilename(new Date('2026-09-01T14:05:09Z'), 'example.com', full)
     expect(name).toBe('full-page-shot/example.com-2026-09-01T14-05-09.png')
   })
 
   it('sanitises a hostname with characters illegal in filenames', () => {
-    const name = buildFilename(new Date('2026-09-01T00:00:00Z'), 'sub.example.com:8443')
+    const name = buildFilename(new Date('2026-09-01T00:00:00Z'), 'sub.example.com:8443', full)
     expect(name).toBe('full-page-shot/sub.example.com-8443-2026-09-01T00-00-00.png')
+  })
+
+  // The suffix is what tells a viewport shot apart from a full-page one of the
+  // same page in the same second, which is otherwise indistinguishable on disk.
+  it('marks a viewport capture with a suffix', () => {
+    const name = buildFilename(new Date('2026-09-01T14:05:09Z'), 'example.com', {
+      mode: 'viewport',
+      format: 'png',
+    })
+    expect(name).toBe('full-page-shot/example.com-2026-09-01T14-05-09-viewport.png')
+  })
+
+  it.each([
+    ['png', '.png'],
+    ['jpeg', '.jpg'],
+    ['webp', '.webp'],
+  ] as const)('uses the extension of the %s download format', (format, extension) => {
+    const name = buildFilename(new Date('2026-09-01T14:05:09Z'), 'example.com', {
+      mode: 'full',
+      format,
+    })
+    expect(name.endsWith(extension)).toBe(true)
+  })
+
+  it('puts the mode suffix before the extension', () => {
+    const name = buildFilename(new Date('2026-09-01T14:05:09Z'), 'example.com', {
+      mode: 'viewport',
+      format: 'jpeg',
+    })
+    expect(name).toBe('full-page-shot/example.com-2026-09-01T14-05-09-viewport.jpg')
+  })
+})
+
+describe('resolveCaptureMode', () => {
+  it('falls back to the stored preference when no mode was requested', () => {
+    expect(resolveCaptureMode(undefined, { ...DEFAULT_PREFS, captureMode: 'viewport' })).toBe(
+      'viewport',
+    )
+  })
+
+  // The right-click menu and the second shortcut both name a mode explicitly,
+  // and that choice is a deliberate override of the default -- not a hint.
+  it('prefers an explicit mode over the stored preference', () => {
+    expect(resolveCaptureMode('full', { ...DEFAULT_PREFS, captureMode: 'viewport' })).toBe('full')
+    expect(resolveCaptureMode('viewport', { ...DEFAULT_PREFS, captureMode: 'full' })).toBe(
+      'viewport',
+    )
   })
 })
 

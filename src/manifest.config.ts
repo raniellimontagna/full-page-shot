@@ -44,6 +44,10 @@ export default defineManifest({
     'downloads',
     'clipboardWrite',
     'storage',
+    // The right-click menu on the toolbar icon, which is how a user picks a
+    // mode without leaving the page. It triggers no install warning, and it is
+    // the only permission v1.1 adds.
+    'contextMenus',
     ...(isE2eBuild ? (['tabs'] as const) : []),
   ],
   ...e2eOnly,
@@ -57,7 +61,16 @@ export default defineManifest({
   commands: {
     _execute_action: {
       suggested_key: { default: 'Ctrl+Shift+Y', mac: 'Command+Shift+Y' },
-      description: 'Capture full page',
+      description: 'Capture (default mode)',
+    },
+    // A custom name, so unlike `_execute_action` this one needs a
+    // `chrome.commands.onCommand` listener -- the service worker has one, and
+    // it dispatches on exactly this id. Ctrl+Shift+U / Cmd+Shift+U is
+    // unassigned in stock Chrome; if another extension claimed it first Chrome
+    // leaves it unbound and the user can rebind at chrome://extensions/shortcuts.
+    'capture-viewport': {
+      suggested_key: { default: 'Ctrl+Shift+U', mac: 'Command+Shift+U' },
+      description: 'Capture visible area',
     },
   },
   options_page: 'src/options/options.html',

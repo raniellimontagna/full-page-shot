@@ -249,3 +249,41 @@ export function badgeForCapture(result: DeliveryResult, truncated: boolean): Bad
   if (delivery === BADGE_FAILURE) return BADGE_FAILURE
   return BADGE_PARTIAL
 }
+
+/**
+ * The two finished images of one capture.
+ *
+ * They are separate fields rather than one `dataUrl` because they genuinely
+ * differ: the clipboard is always PNG (`ClipboardItem` with `image/png` is the
+ * only widely-pasteable image type) while the download carries whichever
+ * format the user chose. They hold the same string only when that format is
+ * PNG too.
+ */
+export interface CaptureImages {
+  clipboardDataUrl: string
+  downloadDataUrl: string
+}
+
+/**
+ * `deliverCapture` with the routing done here instead of at every call site.
+ *
+ * Two capture paths now deliver, and the failure mode this prevents is silent:
+ * hand `clipboardDataUrl` to the download sink and the user gets a `.jpg` file
+ * containing a PNG — a file that still opens, under a green badge, so nothing
+ * anywhere reports a problem. Doing the pairing once, in the module that owns
+ * the sinks, makes that mistake a compile error rather than a bug report.
+ */
+export async function deliverImages(
+  prefs: Prefs,
+  images: CaptureImages,
+  filename: string,
+  io: {
+    copy: (dataUrl: string) => Promise<unknown>
+    download: (dataUrl: string, filename: string) => Promise<unknown>
+  },
+): Promise<DeliveryResult> {
+  return await deliverCapture(prefs, {
+    copy: () => io.copy(images.clipboardDataUrl),
+    download: () => io.download(images.downloadDataUrl, filename),
+  })
+}

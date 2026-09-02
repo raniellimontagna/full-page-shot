@@ -1,3 +1,5 @@
+import { extensionFor } from './formats'
+
 export type CaptureMode = 'full' | 'viewport'
 export type Scale = 1 | 2
 export type DownloadFormat = 'png' | 'jpeg' | 'webp'
@@ -46,16 +48,41 @@ export function isCapturableUrl(url: string | undefined): url is string {
   }
 }
 
+export interface FilenameOptions {
+  mode: CaptureMode
+  format: DownloadFormat
+}
+
 /**
  * `chrome.downloads.download` rejects a filename containing `:` (and other
  * path-hostile characters), which both an ISO timestamp and a host:port
  * authority contain — hence the two substitutions. The timestamp keeps ISO
  * field order so the files sort chronologically by name.
+ *
+ * The `-viewport` suffix is what tells the two modes apart on disk: without
+ * it a viewport shot and a full-page shot of the same host in the same second
+ * are indistinguishable by name, and Chrome would silently number one of them.
+ * The extension follows the *download* format — the clipboard is always PNG,
+ * but nothing about the clipboard reaches a filename.
  */
-export function buildFilename(now: Date, hostname: string): string {
+export function buildFilename(now: Date, hostname: string, options: FilenameOptions): string {
   const stamp = now.toISOString().slice(0, 19).replace(/:/g, '-')
   const safeHost = hostname.replace(/[^a-zA-Z0-9.-]/g, '-')
-  return `full-page-shot/${safeHost}-${stamp}.png`
+  const suffix = options.mode === 'viewport' ? '-viewport' : ''
+  return `full-page-shot/${safeHost}-${stamp}${suffix}${extensionFor(options.format)}`
+}
+
+/**
+ * Which mode a capture runs in.
+ *
+ * The stored preference is only the *default*. The right-click menu and the
+ * `capture-viewport` shortcut each name a mode outright, and that is a
+ * deliberate one-off override the preference must not win against — otherwise
+ * "Capture visible area" would quietly take a full-page shot for anyone whose
+ * default is `full`, which is everyone by default.
+ */
+export function resolveCaptureMode(explicit: CaptureMode | undefined, prefs: Prefs): CaptureMode {
+  return explicit ?? prefs.captureMode
 }
 
 function coerceCaptureMode(value: unknown): CaptureMode {

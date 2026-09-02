@@ -10,6 +10,11 @@ import type { PageMeasurements } from '../../src/core/types'
 
 /** Stands in for the stitched PNG the offscreen document hands back. */
 const STITCHED = 'data:image/png;base64,STITCHED'
+/** The download-format encoding of the same canvas, which may differ. */
+const ENCODED = 'data:image/jpeg;base64,ENCODED'
+
+/** The preferences the caller threads in; PNG at 1x reproduces 1.0.0 output. */
+const ENCODE = { scale: 1, downloadFormat: 'png' } as const
 
 const measurements: PageMeasurements = {
   scrollWidth: 1000,
@@ -42,7 +47,7 @@ function makeDeps(overrides: Partial<CaptureDeps> = {}, page: PageMeasurements =
       offscreenCalls.push(request.type)
       events.push(`offscreen:${request.type}`)
       return request.type === 'finishCapture'
-        ? { ok: true as const, clipboardDataUrl: STITCHED }
+        ? { ok: true as const, clipboardDataUrl: STITCHED, downloadDataUrl: ENCODED }
         : { ok: true as const }
     }),
     captureVisibleTab: vi.fn(async () => {
@@ -60,13 +65,13 @@ function makeDeps(overrides: Partial<CaptureDeps> = {}, page: PageMeasurements =
 describe('runCapture', () => {
   it('captures one frame per planned step', async () => {
     const { deps } = makeDeps()
-    await runCapture(1, deps)
+    await runCapture(1, deps, ENCODE)
     expect(deps.captureVisibleTab).toHaveBeenCalledTimes(3)
   })
 
   it('shows fixed elements on the first frame and hides them afterwards', async () => {
     const { deps, events } = makeDeps()
-    await runCapture(1, deps)
+    await runCapture(1, deps, ENCODE)
 
     // Hiding must land strictly between the first and second captures.
     // Earlier strips the header from the whole screenshot; later (or never)
@@ -85,7 +90,7 @@ describe('runCapture', () => {
 
   it('streams each frame instead of batching them', async () => {
     const { deps, offscreenCalls } = makeDeps()
-    await runCapture(1, deps)
+    await runCapture(1, deps, ENCODE)
     expect(offscreenCalls.filter((t) => t === 'addFrame')).toHaveLength(3)
     expect(offscreenCalls[0]).toBe('beginCapture')
     expect(offscreenCalls.at(-1)).toBe('finishCapture')
@@ -97,7 +102,7 @@ describe('runCapture', () => {
         throw new Error('rate limited')
       }),
     })
-    await expect(runCapture(1, deps)).rejects.toThrow('rate limited')
+    await expect(runCapture(1, deps, ENCODE)).rejects.toThrow('rate limited')
     expect(contentCalls.at(-1)?.type).toBe('restore')
   })
 
@@ -107,14 +112,14 @@ describe('runCapture', () => {
         throw new Error('boom')
       }),
     })
-    await expect(runCapture(1, deps)).rejects.toThrow('boom')
+    await expect(runCapture(1, deps, ENCODE)).rejects.toThrow('boom')
     expect(offscreenCalls).toContain('abortCapture')
     expect(offscreenCalls).not.toContain('finishCapture')
   })
 
   it('throttles between captures', async () => {
     const { deps } = makeDeps()
-    await runCapture(1, deps)
+    await runCapture(1, deps, ENCODE)
     expect(deps.delay).toHaveBeenCalled()
   })
 
@@ -127,7 +132,7 @@ describe('runCapture', () => {
       }),
     })
 
-    await expect(runCapture(1, deps)).rejects.toThrow(/no longer active/i)
+    await expect(runCapture(1, deps, ENCODE)).rejects.toThrow(/no longer active/i)
     expect(deps.captureVisibleTab).toHaveBeenCalledTimes(1)
     expect(offscreenCalls).toContain('abortCapture')
     expect(contentCalls.at(-1)?.type).toBe('restore')
@@ -138,8 +143,9 @@ describe('runCapture', () => {
   // lifetime -- so the image has to come back out for the caller to use.
   it('returns the stitched image from finishCapture', async () => {
     const { deps } = makeDeps()
-    await expect(runCapture(1, deps)).resolves.toEqual({
-      dataUrl: STITCHED,
+    await expect(runCapture(1, deps, ENCODE)).resolves.toEqual({
+      clipboardDataUrl: STITCHED,
+      downloadDataUrl: ENCODED,
       truncated: false,
       canvasWidth: 1000,
       canvasHeight: 2000,
@@ -152,7 +158,7 @@ describe('runCapture', () => {
   // carry the fact out to the caller that owns the badge.
   it('reports a plan the canvas limits truncated', async () => {
     const { deps } = makeDeps({}, { ...measurements, scrollHeight: 400_000 })
-    const outcome = await runCapture(1, deps)
+    const outcome = await runCapture(1, deps, ENCODE)
     expect(outcome.truncated).toBe(true)
     // Clamped to Chrome's 65,535-device-px maximum canvas dimension.
     expect(outcome.canvasHeight).toBe(65_535)
@@ -185,7 +191,7 @@ describe('runCapture', () => {
 
       // Two rejections then success, inside one frame's attempt budget: the
       // capture is delivered rather than aborted, which is the whole point.
-      await expect(runCapture(1, deps)).resolves.toMatchObject({ dataUrl: STITCHED })
+      await expect(runCapture(1, deps, ENCODE)).resolves.toMatchObject({ clipboardDataUrl: STITCHED })
       expect(calls).toBe(3)
       expect(contentCalls.at(-1)?.type).toBe('restore')
     })
@@ -202,7 +208,7 @@ describe('runCapture', () => {
         },
         oneFrame,
       )
-      await runCapture(1, deps)
+      await runCapture(1, deps, ENCODE)
 
       const waits = (deps.delay as unknown as { mock: { calls: number[][] } }).mock.calls.map(
         (args) => args[0],
@@ -220,7 +226,7 @@ describe('runCapture', () => {
         oneFrame,
       )
 
-      await expect(runCapture(1, deps)).rejects.toThrow(/MAX_CAPTURE_VISIBLE_TAB/)
+      await expect(runCapture(1, deps, ENCODE)).rejects.toThrow(/MAX_CAPTURE_VISIBLE_TAB/)
       expect(deps.captureVisibleTab).toHaveBeenCalledTimes(CAPTURE_QUOTA_MAX_ATTEMPTS)
       expect(offscreenCalls).toContain('abortCapture')
       expect(contentCalls.at(-1)?.type).toBe('restore')
@@ -236,7 +242,7 @@ describe('runCapture', () => {
         oneFrame,
       )
 
-      await expect(runCapture(1, deps)).rejects.toThrow('No tab with id 7.')
+      await expect(runCapture(1, deps, ENCODE)).rejects.toThrow('No tab with id 7.')
       expect(deps.captureVisibleTab).toHaveBeenCalledTimes(1)
       expect(offscreenCalls).toContain('abortCapture')
       expect(contentCalls.at(-1)?.type).toBe('restore')
@@ -263,7 +269,7 @@ describe('runCapture', () => {
         oneFrame,
       )
 
-      await expect(runCapture(1, deps)).rejects.toThrow(/no longer active/i)
+      await expect(runCapture(1, deps, ENCODE)).rejects.toThrow(/no longer active/i)
       expect(captures).toBe(1)
     })
   })
@@ -278,12 +284,41 @@ describe('runCapture', () => {
       sendToOffscreen: vi.fn(async (request: OffscreenRequest) => {
         sent.push(request)
         return request.type === 'finishCapture'
-          ? { ok: true as const, clipboardDataUrl: STITCHED }
+          ? { ok: true as const, clipboardDataUrl: STITCHED, downloadDataUrl: ENCODED }
           : { ok: true as const }
       }),
     })
-    await runCapture(1, deps)
+    await runCapture(1, deps, ENCODE)
     expect(sent.at(-1)).toMatchObject({ type: 'finishCapture' })
+    expect(sent.at(-1)).not.toHaveProperty('filename')
+  })
+
+  // The offscreen document cannot know either of these: the preferences live
+  // in sync storage, and the device pixel ratio is the *captured tab's*, which
+  // the content script reported in `measure`. Getting this wrong ships a 2x
+  // PNG to a user who asked for a small 1x JPEG, silently.
+  it('threads the requested scale, format and the page devicePixelRatio into finishCapture', async () => {
+    const sent: OffscreenRequest[] = []
+    const { deps } = makeDeps(
+      {
+        sendToOffscreen: vi.fn(async (request: OffscreenRequest) => {
+          sent.push(request)
+          return request.type === 'finishCapture'
+            ? { ok: true as const, clipboardDataUrl: STITCHED, downloadDataUrl: ENCODED }
+            : { ok: true as const }
+        }),
+      },
+      { ...measurements, devicePixelRatio: 2 },
+    )
+
+    await runCapture(1, deps, { scale: 1, downloadFormat: 'webp' })
+
+    expect(sent.at(-1)).toEqual({
+      type: 'finishCapture',
+      scale: 1,
+      downloadFormat: 'webp',
+      devicePixelRatio: 2,
+    })
   })
 
   // `ok: true` with no image is a broken offscreen document, not a success.
@@ -295,7 +330,7 @@ describe('runCapture', () => {
         request.type === 'finishCapture' ? { ok: true as const } : { ok: true as const },
       ),
     })
-    await expect(runCapture(1, deps)).rejects.toThrow(/returned no image/)
+    await expect(runCapture(1, deps, ENCODE)).rejects.toThrow(/returned no image/)
     expect(contentCalls.at(-1)?.type).toBe('restore')
   })
 })

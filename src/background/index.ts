@@ -14,16 +14,19 @@
 // `service-worker-loader.js` at the content script's chunk instead of this
 // one. See the comment in `src/content/content-script.ts`.
 import CONTENT_SCRIPT_FILE from '../content/content-script.ts?script&iife'
-import { runCapture } from './capture-loop'
+import { runCapture, type EncodeOptions } from './capture-loop'
+import { runViewportCapture } from './viewport-capture'
 import {
   badgeForCapture,
   copyViaContentScript,
-  deliverCapture,
+  deliverImages,
   downloadDataUrl,
   BADGE_FAILURE,
+  type CaptureImages,
 } from './sinks'
 import { createSingleFlight } from './single-flight'
-import { buildFilename, isCapturableUrl, loadPrefs } from '../shared/prefs'
+import { buildFilename, isCapturableUrl, loadPrefs, resolveCaptureMode } from '../shared/prefs'
+import type { CaptureMode } from '../shared/prefs'
 import type {
   ContentRequest,
   ContentResponse,
@@ -148,7 +151,7 @@ const captureSingleFlight = createSingleFlight()
  * this project has already shipped two such bugs. Nothing else about the
  * behaviour changed: the listener below is now a one-line call.
  */
-export async function captureTab(tab: chrome.tabs.Tab): Promise<void> {
+export async function captureTab(tab: chrome.tabs.Tab, mode?: CaptureMode): Promise<void> {
   const tabId = tab.id
   // Captured at click time. Every later window-scoped call is pinned to this
   // window rather than to whatever "current" means later on.
@@ -161,7 +164,7 @@ export async function captureTab(tab: chrome.tabs.Tab): Promise<void> {
   }
 
   await captureSingleFlight(
-    () => runOneCapture(tabId, windowId, url),
+    () => runOneCapture(tabId, windowId, url, mode),
     async () => {
       // Not silent, and not a ✓. The second click did not capture anything, so
       // saying so is the honest signal -- and the page is left completely
@@ -175,63 +178,78 @@ export async function captureTab(tab: chrome.tabs.Tab): Promise<void> {
   )
 }
 
-async function runOneCapture(tabId: number, windowId: number, url: string): Promise<void> {
+/**
+ * The captured tab's `window.devicePixelRatio`, without injecting anything.
+ *
+ * The full path gets this for free: the content script reports it as part of
+ * `measure`. The viewport path deliberately injects no content script at all,
+ * so it asks for this one number with a one-expression `func:` injection --
+ * cheap, self-contained, and it leaves nothing behind in the page. Anything
+ * unusable falls back to 1, which is the ratio of an ordinary display and the
+ * value at which the 1x downscale is a no-op: a bad reading must never scale
+ * the image by a garbage factor.
+ */
+async function tabDevicePixelRatio(tabId: number): Promise<number> {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => window.devicePixelRatio,
+  })
+  const value = results[0]?.result
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 1
+}
+
+async function runOneCapture(
+  tabId: number,
+  windowId: number,
+  url: string,
+  requestedMode: CaptureMode | undefined,
+): Promise<void> {
   const closeOffscreen = makeOffscreenCloser()
   try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: [contentScriptPath()],
-    })
-
     const prefs = await loadPrefs()
-    const { dataUrl, truncated, canvasWidth, canvasHeight } = await runCapture(tabId, {
-      sendToContent: (id, request: ContentRequest) =>
-        chrome.tabs.sendMessage(id, request) as Promise<ContentResponse>,
-      sendToOffscreen: (request: OffscreenRequest) =>
-        chrome.runtime.sendMessage(request) as Promise<OffscreenResponse>,
-      // Pinned to the captured window. Called without a windowId this grabs
-      // the *last focused* window, so merely focusing a second window would
-      // start splicing that window's tab into the screenshot.
-      captureVisibleTab: () => chrome.tabs.captureVisibleTab(windowId, { format: 'png' }),
-      ensureOffscreen,
-      // Asks the tab about itself rather than asking which tab is "current".
-      // `chrome.tabs.query({ active: true, currentWindow: true })` resolves
-      // "current window" to the last focused one when called from a service
-      // worker, so focusing any other window aborted a perfectly valid
-      // capture. This and the windowId above are one fix: the old abort was
-      // load-bearing precisely because captureVisibleTab was unpinned, so
-      // removing the false aborts without pinning the capture would have
-      // traded a nuisance for a wrong screenshot.
-      isTabStillActive: async () => (await chrome.tabs.get(tabId)).active,
-      delay,
-    })
+    const mode = resolveCaptureMode(requestedMode, prefs)
+    const encode: EncodeOptions = { scale: prefs.scale, downloadFormat: prefs.downloadFormat }
 
-    // The image is a self-contained data URL and the canvas has done its job,
+    // Pinned to the captured window. Called without a windowId this grabs the
+    // *last focused* window, so merely focusing a second window would start
+    // splicing that window's tab into the screenshot.
+    const captureVisibleTab = (): Promise<string> =>
+      chrome.tabs.captureVisibleTab(windowId, { format: 'png' })
+    const sendToOffscreen = (request: OffscreenRequest): Promise<OffscreenResponse> =>
+      chrome.runtime.sendMessage(request) as Promise<OffscreenResponse>
+
+    let images: CaptureImages
+    let truncated = false
+
+    if (mode === 'viewport') {
+      images = await runViewportCapture(
+        { captureVisibleTab, sendToOffscreen, ensureOffscreen, getDevicePixelRatio: () => tabDevicePixelRatio(tabId) },
+        encode,
+      )
+    } else {
+      images = await runFullPageCapture(tabId, { captureVisibleTab, sendToOffscreen }, encode, (result) => {
+        truncated = result
+      })
+    }
+
+    // The images are self-contained data URLs and the canvas has done its job,
     // so the document is closed here rather than after delivery: a stitched
     // full-page canvas is tens of megabytes, and nothing below needs it.
     await closeOffscreen()
 
     // Both sinks run, independently, whatever either one does -- and the badge
-    // says which of those two things happened. `runCapture` has already sent
-    // `restore`, so the page is back where the user left it before a single
-    // byte is delivered.
-    const delivery = await deliverCapture(prefs, {
-      copy: () => copyViaContentScript(tabId, dataUrl),
-      download: () => downloadDataUrl(dataUrl, buildFilename(new Date(), new URL(url).hostname)),
-    })
-
-    // The planner clamps pages that would exceed Chrome's canvas ceilings, so
-    // what was delivered is the top of the page rather than the whole thing.
-    // The badge says so (amber, not ✓) and the log says by how much -- the
-    // user's next question is "how much did I lose?", and only these numbers
-    // can answer it.
-    if (truncated) {
-      console.warn(
-        `full-page-shot: the page exceeded Chrome's canvas limits and was captured up to ` +
-          `${String(canvasWidth)}x${String(canvasHeight)} device px; the delivered image is ` +
-          'the top of the page, not all of it',
-      )
-    }
+    // says which of those two things happened. The full path has already sent
+    // `restore`, and the viewport path never altered the page at all, so the
+    // page is exactly as the user left it before a single byte is delivered.
+    const delivery = await deliverImages(
+      prefs,
+      images,
+      buildFilename(new Date(), new URL(url).hostname, { mode, format: prefs.downloadFormat }),
+      {
+        copy: (dataUrl) => copyViaContentScript(tabId, dataUrl),
+        download: (dataUrl, filename) => downloadDataUrl(dataUrl, filename),
+      },
+    )
 
     const badge = badgeForCapture(delivery, truncated)
     await setBadge(tabId, badge.text, badge.color)
@@ -245,6 +263,142 @@ async function runOneCapture(tabId: number, windowId: number, url: string): Prom
     await closeOffscreen()
   }
 }
+
+/**
+ * The full-page path: inject, measure, scroll, stitch.
+ *
+ * Unchanged from 1.0.0 apart from what it is handed (the user's scale and
+ * format) and what it hands back (two images instead of one). It reports
+ * truncation through a callback because that fact belongs to the badge, which
+ * `runOneCapture` owns.
+ */
+async function runFullPageCapture(
+  tabId: number,
+  io: {
+    captureVisibleTab: () => Promise<string>
+    sendToOffscreen: (request: OffscreenRequest) => Promise<OffscreenResponse>
+  },
+  encode: EncodeOptions,
+  reportTruncated: (truncated: boolean) => void,
+): Promise<CaptureImages> {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: [contentScriptPath()],
+  })
+
+  const {
+    clipboardDataUrl,
+    downloadDataUrl: encodedDataUrl,
+    truncated,
+    canvasWidth,
+    canvasHeight,
+  } = await runCapture(
+    tabId,
+    {
+      sendToContent: (id, request: ContentRequest) =>
+        chrome.tabs.sendMessage(id, request) as Promise<ContentResponse>,
+      sendToOffscreen: io.sendToOffscreen,
+      captureVisibleTab: io.captureVisibleTab,
+      ensureOffscreen,
+      // Asks the tab about itself rather than asking which tab is "current".
+      // `chrome.tabs.query({ active: true, currentWindow: true })` resolves
+      // "current window" to the last focused one when called from a service
+      // worker, so focusing any other window aborted a perfectly valid
+      // capture. This and the pinned windowId are one fix: the old abort was
+      // load-bearing precisely because captureVisibleTab was unpinned, so
+      // removing the false aborts without pinning the capture would have
+      // traded a nuisance for a wrong screenshot.
+      isTabStillActive: async () => (await chrome.tabs.get(tabId)).active,
+      delay,
+    },
+    encode,
+  )
+
+  // The planner clamps pages that would exceed Chrome's canvas ceilings, so
+  // what was delivered is the top of the page rather than the whole thing.
+  // The badge says so (amber, not ✓) and the log says by how much -- the
+  // user's next question is "how much did I lose?", and only these numbers
+  // can answer it.
+  if (truncated) {
+    console.warn(
+      `full-page-shot: the page exceeded Chrome's canvas limits and was captured up to ` +
+        `${String(canvasWidth)}x${String(canvasHeight)} device px; the delivered image is ` +
+        'the top of the page, not all of it',
+    )
+  }
+  reportTruncated(truncated)
+
+  return { clipboardDataUrl, downloadDataUrl: encodedDataUrl }
+}
+
+// ---------------------------------------------------------------------------
+// Mode selection.
+//
+// Three entry points, one function. The toolbar click (and its
+// `_execute_action` shortcut) names no mode, so it takes the user's default;
+// the two menu items and the `capture-viewport` shortcut each name one, which
+// overrides that default for this capture only.
+// ---------------------------------------------------------------------------
+
+const MENU_FULL = 'capture-full'
+const MENU_VIEWPORT = 'capture-viewport'
+
+/**
+ * The menu ids that name a mode, and the mode each names.
+ *
+ * A lookup rather than a chain of `if`s so the context-menu listener and the
+ * command listener dispatch through the *same* table -- `capture-viewport` is
+ * deliberately both a menu id and a command name, so the two entry points
+ * cannot drift apart.
+ */
+const MODE_BY_ID: Record<string, CaptureMode> = {
+  [MENU_FULL]: 'full',
+  [MENU_VIEWPORT]: 'viewport',
+}
+
+/**
+ * (Re)creates the action's right-click menu.
+ *
+ * `removeAll` first, unconditionally: `contextMenus.create` fails with
+ * "Cannot create item with duplicate id" if the item already exists, and it
+ * survives across a service-worker restart when the extension is merely
+ * reloaded rather than reinstalled. Removing first makes this idempotent, so
+ * running it on both `onInstalled` and `onStartup` is safe.
+ *
+ * `contexts: ['action']` scopes both items to the toolbar icon. They never
+ * appear on the page itself, so this adds nothing to a right-click in the
+ * content the user is reading.
+ */
+function createContextMenus(): void {
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({ id: MENU_FULL, title: 'Capture full page', contexts: ['action'] })
+    chrome.contextMenus.create({
+      id: MENU_VIEWPORT,
+      title: 'Capture visible area',
+      contexts: ['action'],
+    })
+  })
+}
+
+chrome.runtime.onInstalled.addListener(createContextMenus)
+// Defensively, too: `onInstalled` fires once per install/update, and a profile
+// whose menus were somehow lost would otherwise never get them back until the
+// next update.
+chrome.runtime.onStartup.addListener(createContextMenus)
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  const mode = MODE_BY_ID[String(info.menuItemId)]
+  if (!mode || !tab) return
+  void captureTab(tab, mode)
+})
+
+chrome.commands.onCommand.addListener((command, tab) => {
+  const mode = MODE_BY_ID[command]
+  // `_execute_action` never reaches here (Chrome fires `action.onClicked` for
+  // it), so an unknown command is genuinely not ours.
+  if (!mode || !tab) return
+  void captureTab(tab, mode)
+})
 
 chrome.action.onClicked.addListener((tab) => {
   void captureTab(tab)

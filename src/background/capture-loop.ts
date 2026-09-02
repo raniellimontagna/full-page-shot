@@ -6,6 +6,7 @@ import type {
   OffscreenRequest,
   OffscreenResponse,
 } from '../shared/messages'
+import type { DownloadFormat, Scale } from '../shared/prefs'
 
 /** captureVisibleTab is quota-limited; this spacing keeps the loop under it. */
 export const CAPTURE_INTERVAL_MS = 550
@@ -87,19 +88,37 @@ export interface CaptureDeps {
   delay: (ms: number) => Promise<void>
 }
 
+/**
+ * The half of the user's preferences the stitching loop has to forward.
+ *
+ * Not read here: the loop has no access to storage and no business having an
+ * opinion about output size. `devicePixelRatio` is deliberately absent — the
+ * content script reports the captured tab's own ratio in `measure`, so the
+ * loop already knows it and the caller must not be trusted to guess.
+ */
+export interface EncodeOptions {
+  scale: Scale
+  downloadFormat: DownloadFormat
+}
+
 export interface CaptureOutcome {
   /**
-   * The stitched PNG, as a data URL.
+   * The two finished images, as data URLs.
    *
-   * `runCapture` produces the image and stops there: it neither delivers it
+   * `runCapture` produces them and stops there: it neither delivers them
    * nor closes the offscreen document. Delivery needs the user's preferences,
    * a filename and a badge, and the document's lifetime belongs to whoever
    * created it — none of which is this function's business. Returning the
-   * image is also what lets the caller close the offscreen document
+   * images is also what lets the caller close the offscreen document
    * immediately, since a data URL keeps working after the document that made
    * it is gone.
+   *
+   * Two, not one: the clipboard is always PNG while the download carries the
+   * user's chosen format, so they are the same string only when that format is
+   * PNG too.
    */
-  dataUrl: string
+  clipboardDataUrl: string
+  downloadDataUrl: string
   /**
    * Whether `planCapture` had to clamp the page to Chrome's canvas ceilings,
    * i.e. the delivered image is a correct capture of the *top* of the page and
@@ -121,7 +140,11 @@ function unwrap(response: ContentResponse | OffscreenResponse): void {
   if (!response.ok) throw new Error(response.error)
 }
 
-export async function runCapture(tabId: number, deps: CaptureDeps): Promise<CaptureOutcome> {
+export async function runCapture(
+  tabId: number,
+  deps: CaptureDeps,
+  encode: EncodeOptions,
+): Promise<CaptureOutcome> {
   let began = false
 
   // Everything from `measure` onward sits inside the try. `measure` latches
@@ -181,22 +204,25 @@ export async function runCapture(tabId: number, deps: CaptureDeps): Promise<Capt
       )
     }
 
-    // TODO(Task 3): pass the user's `scale`/`downloadFormat` and the captured
-    // tab's real `devicePixelRatio` through from the caller. Until the service
-    // worker learns to read those preferences, this asks for exactly the 1.0.0
-    // behaviour -- the canvas as captured, PNG -- so nothing changes yet.
+    // The preferences come from the caller (only the service worker can read
+    // storage) and the device pixel ratio from the page itself: the canvas was
+    // stitched in the *captured tab's* device pixels, and the offscreen
+    // document's own ratio has nothing to do with it.
     const finished = await deps.sendToOffscreen({
       type: 'finishCapture',
-      scale: 2,
-      downloadFormat: 'png',
-      devicePixelRatio: 1,
+      scale: encode.scale,
+      downloadFormat: encode.downloadFormat,
+      devicePixelRatio: measurements.devicePixelRatio,
     })
     if (!finished.ok) throw new Error(finished.error)
-    if (!finished.clipboardDataUrl) throw new Error('the offscreen document returned no image')
+    if (!finished.clipboardDataUrl || !finished.downloadDataUrl) {
+      throw new Error('the offscreen document returned no image')
+    }
     began = false
 
     return {
-      dataUrl: finished.clipboardDataUrl,
+      clipboardDataUrl: finished.clipboardDataUrl,
+      downloadDataUrl: finished.downloadDataUrl,
       truncated: plan.truncated,
       canvasWidth: plan.canvasWidth,
       canvasHeight: plan.canvasHeight,

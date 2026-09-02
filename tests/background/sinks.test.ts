@@ -9,6 +9,7 @@ import {
   badgeForDelivery,
   copyViaContentScript,
   deliverCapture,
+  deliverImages,
   downloadDataUrl,
   type DeliveryResult,
 } from '../../src/background/sinks'
@@ -304,6 +305,48 @@ describe('deliverCapture', () => {
       },
     )
     expect(warn.mock.calls.flat().join(' ')).toMatch(/clipboard.*Document is not focused/)
+  })
+})
+
+// The clipboard is always PNG and the download carries the user's chosen
+// format, so the two sinks receive *different* images. Routing them by hand at
+// each call site is exactly how the download quietly ends up as the clipboard
+// PNG, so the routing lives here and is tested.
+describe('deliverImages', () => {
+  const images = {
+    clipboardDataUrl: 'data:image/png;base64,CLIP',
+    downloadDataUrl: 'data:image/jpeg;base64,DOWN',
+  }
+
+  it('sends the PNG to the clipboard and the encoded image to the download', async () => {
+    const copy = vi.fn(async () => {})
+    const download = vi.fn(async () => {})
+
+    const result = await deliverImages(
+      { ...DEFAULT_PREFS, toClipboard: true, toDownload: true },
+      images,
+      'full-page-shot/example.com.jpg',
+      { copy, download },
+    )
+
+    expect(copy).toHaveBeenCalledWith(images.clipboardDataUrl)
+    expect(download).toHaveBeenCalledWith(images.downloadDataUrl, 'full-page-shot/example.com.jpg')
+    expect(result.succeeded).toEqual(['clipboard', 'download'])
+  })
+
+  it('honours the disabled sinks', async () => {
+    const copy = vi.fn(async () => {})
+    const download = vi.fn(async () => {})
+
+    await deliverImages(
+      { ...DEFAULT_PREFS, toClipboard: false, toDownload: true },
+      images,
+      'name.png',
+      { copy, download },
+    )
+
+    expect(copy).not.toHaveBeenCalled()
+    expect(download).toHaveBeenCalledTimes(1)
   })
 })
 
