@@ -115,7 +115,17 @@ test.describe('viewport mode', () => {
     // both paths pay and neither can avoid. The comparison is the honest
     // form -- and it is conservative, since the viewport capture ran first and
     // therefore carried that one-off cost itself.
-    expect(probe.elapsedMs).toBeLessThan(full.elapsedMs / 3)
+    //
+    // The divisor is 2, not a tighter ratio: measured values were ~1.07s for
+    // the probe vs ~4.9s for the full run, a >4x gap, but roughly 1s of the
+    // probe's time is the one-off offscreen-document creation that lands on
+    // whichever run happens first (here, the viewport run), while the full
+    // run's duration is dominated by the fixed 550ms inter-frame spacing
+    // across many frames. On a slow CI runner that fixed cold-start cost is a
+    // proportionally larger share of the probe's total, which erodes the
+    // ratio in the flaky direction -- /2 keeps meaningful margin without
+    // being tight enough to flake on a loaded runner.
+    expect(probe.elapsedMs).toBeLessThan(full.elapsedMs / 2)
 
     await page.close()
   })
@@ -178,8 +188,15 @@ test.describe('download formats', () => {
   })
 
   test('a PNG download is the very same bytes as the clipboard image', async () => {
-    // The single-encode contract: with `downloadFormat: 'png'` the offscreen
-    // document must hand back one string twice, not encode the canvas twice.
+    // Format routing, not the single-encode contract: this only proves that
+    // with `downloadFormat: 'png'` both sinks end up holding the same PNG
+    // string. PNG encoding of a given canvas is deterministic, so encoding
+    // it twice would produce the identical string here too -- this
+    // assertion cannot tell "encoded once, handed back twice" apart from
+    // "encoded twice, byte-for-byte the same both times". The single-encode
+    // contract itself is covered by the unit test in
+    // tests/offscreen/export-both.test.ts, which injects a fake `Stitcher`
+    // and counts calls to `export`.
     await setPrefs(context, { toClipboard: false, toDownload: false, downloadFormat: 'png' })
     const page = await openFixture(context, 'short.html')
     const probe = await runCapture(context, page, 'full')

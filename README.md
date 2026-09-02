@@ -35,7 +35,7 @@ outright and override that default for one capture. Both shortcuts are
 suggestions — if another extension already claimed the combination, Chrome
 leaves it unassigned and you can set your own at `chrome://extensions/shortcuts`.
 
-A visible-area capture never injects anything into the page, never scrolls it
+A visible-area capture never injects the content script, never scrolls it
 and never changes a style, so there is nothing to restore afterwards. Its
 downloads are named with a `-viewport` suffix, so the two modes are told apart
 on disk.

@@ -179,7 +179,8 @@ export async function captureTab(tab: chrome.tabs.Tab, mode?: CaptureMode): Prom
 }
 
 /**
- * The captured tab's `window.devicePixelRatio`, without injecting anything.
+ * The captured tab's `window.devicePixelRatio`, without injecting the content
+ * script.
  *
  * The full path gets this for free: the content script reports it as part of
  * `measure`. The viewport path deliberately injects no content script at all,

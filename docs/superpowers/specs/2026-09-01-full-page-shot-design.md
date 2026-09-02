@@ -17,7 +17,7 @@ usuário, sem deixar a página em estado alterado.
 | Decisão | Escolha | Motivo |
 |---|---|---|
 | Modo de captura | Full-page (scroll) por padrão; viewport como segundo modo desde a v1.1 | Full-page é o diferencial; o viewport ganhou lugar por ser o mesmo fluxo de entrega (clipboard + download nomeado) em um caminho instantâneo |
-| Saída | Clipboard **e** download PNG, configurável | Cobre colar em ferramenta e arquivar |
+| Saída | Clipboard sempre PNG; download em PNG/JPEG/WebP, configurável | Cobre colar em ferramenta e arquivar |
 | Preview antes de salvar | Não | Um clique, sem interrupção |
 | Distribuição | Chrome Web Store, repo público | Mesmo padrão do `tab-switch` |
 | Navegador | Chrome primeiro | Firefox/Edge ficam fora da v1 |

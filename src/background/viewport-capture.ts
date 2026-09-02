@@ -50,7 +50,7 @@ export interface ViewportCaptureOutcome {
  * position, scroll the document and hide fixed elements, which is why it owes
  * the page a restore on every exit path including a crash. This path reads one
  * frame of the viewport exactly as it stands — no scroll, no style change, no
- * injected script at all — so there is nothing to put back and a failure here
+ * injected content script — so there is nothing to put back and a failure here
  * leaves the page byte-for-byte as it was found.
  *
  * It cannot be truncated either: one viewport is always far inside Chrome's

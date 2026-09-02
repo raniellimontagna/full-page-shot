@@ -1,5 +1,17 @@
 import type { ExportRequestFields, OffscreenRequest, OffscreenResponse } from '../shared/messages'
-import { Stitcher, stitcherFromFrame } from './stitcher'
+import { Stitcher, stitcherFromFrame, type ExportOptions } from './stitcher'
+
+/**
+ * The only part of `Stitcher` `exportBoth` actually needs.
+ *
+ * Kept as a structural interface (rather than taking a `Stitcher` directly)
+ * so `exportBoth` can be exercised in a unit test with a fake that counts
+ * calls to `export`, without pulling in `OffscreenCanvas` -- which does not
+ * exist in the plain Node environment those tests run under.
+ */
+export interface Exportable {
+  export(options: ExportOptions): Promise<Blob>
+}
 
 // Streamed across messages: the service worker sends one frame at a time,
 // so the canvas must persist between `beginCapture`/`addFrame` calls rather
@@ -33,8 +45,8 @@ function blobToDataUrl(blob: Blob): Promise<string> {
  * PNG downloads encode once and hand the same string back twice: the two sinks
  * would otherwise pay for an identical encode of a possibly very large canvas.
  */
-async function exportBoth(
-  stitcher: Stitcher,
+export async function exportBoth(
+  stitcher: Exportable,
   { scale, downloadFormat, devicePixelRatio }: ExportRequestFields,
 ): Promise<OffscreenResponse> {
   const clipboardDataUrl = await blobToDataUrl(

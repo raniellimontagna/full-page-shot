@@ -6,7 +6,7 @@
 Capture a full scrollable page or just the visible area — copy to clipboard or save. No accounts, no tracking, all local.
 ```
 
-Character count: 121 (limit 132).
+Character count: 123 (limit 132).
 
 ## Detailed description
 
