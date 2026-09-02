@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ContentRequest, ContentResponse } from '../../src/shared/messages'
+import { OVERLAY_TAG } from '../../src/content/selection-overlay'
 
 type Listener = (
   request: ContentRequest,
@@ -263,5 +264,86 @@ describe('content script restore watchdog', () => {
     // ...and it still fires once the commands genuinely stop.
     vi.advanceTimersByTime(watchdogMs)
     expect(scrollTo).toHaveBeenCalledWith({ top: 500, left: 0, behavior: 'instant' })
+  })
+})
+
+describe('content script area selection', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    clearInjectionSentinel()
+    document.querySelector(OVERLAY_TAG)?.remove()
+  })
+
+  function dispatchPointer(type: 'pointerdown' | 'pointermove' | 'pointerup', x: number, y: number): void {
+    const host = document.querySelector(OVERLAY_TAG)
+    if (!host) throw new Error(`no <${OVERLAY_TAG}> mounted`)
+    host.dispatchEvent(new PointerEvent(type, { clientX: x, clientY: y, bubbles: true, cancelable: true }))
+  }
+
+  // `selectArea` starts a capture rather than continuing one, so it arrives
+  // with `originalScrollY === null` by definition. Behind the abandoned-capture
+  // guard it would be refused every single time — the same trap `copyImage`
+  // fell into. Hence its case sits above the guard, with `measure`.
+  it('accepts selectArea on a page that was never in a capture, and returns the rect', async () => {
+    const { listener } = await loadContentScript()
+
+    const pending = send(listener, { type: 'selectArea' })
+    dispatchPointer('pointerdown', 100, 120)
+    dispatchPointer('pointermove', 400, 320)
+    dispatchPointer('pointerup', 400, 320)
+
+    expect(await pending).toEqual({ ok: true, rect: { x: 100, y: 120, width: 300, height: 200 } })
+    expect(document.querySelector(OVERLAY_TAG)).toBeNull()
+  })
+
+  // Cancel is not failure: `ok: true` with a null rect, so the service worker
+  // delivers nothing and shows the neutral badge instead of the failure one.
+  it('reports a cancelled selection as ok with a null rect', async () => {
+    const { listener } = await loadContentScript()
+
+    const pending = send(listener, { type: 'selectArea' })
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+
+    expect(await pending).toEqual({ ok: true, rect: null })
+    expect(document.querySelector(OVERLAY_TAG)).toBeNull()
+  })
+
+  // The overlay is page state like a hidden header is: if the service worker
+  // is evicted while it is up, nothing else is left alive to take it down, and
+  // the user is stuck with a dimmed, crosshaired page that swallows clicks.
+  it('lets the watchdog remove an overlay abandoned by an evicted worker', async () => {
+    vi.useFakeTimers()
+    const { listener, watchdogMs } = await loadContentScript()
+
+    const pending = send(listener, { type: 'selectArea' })
+    expect(document.querySelector(OVERLAY_TAG)).not.toBeNull()
+
+    await vi.advanceTimersByTimeAsync(watchdogMs)
+
+    expect(document.querySelector(OVERLAY_TAG)).toBeNull()
+    await vi.advanceTimersByTimeAsync(100)
+    expect(await pending).toEqual({ ok: true, rect: null })
+  })
+
+  // The reply is the end of this command, so the timer must not outlive it and
+  // scroll a page that is no longer in a capture.
+  it('clears the watchdog once the selection has been answered', async () => {
+    vi.useFakeTimers()
+    const { listener, watchdogMs } = await loadContentScript()
+    const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+    stubScrollPosition(500)
+
+    await send(listener, { type: 'measure' })
+    const pending = send(listener, { type: 'selectArea' })
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    await vi.advanceTimersByTimeAsync(100)
+    await pending
+    scrollTo.mockClear()
+
+    await vi.advanceTimersByTimeAsync(watchdogMs * 2)
+
+    expect(scrollTo).not.toHaveBeenCalled()
   })
 })

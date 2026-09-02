@@ -2,6 +2,7 @@ import type { ContentRequest, ContentResponse } from '../shared/messages'
 import { copyDataUrlToClipboard } from './clipboard'
 import { hideFixedElements, restoreFixedElements } from './fixed-elements'
 import { measurePage, scrollToStep } from './scroll-driver'
+import { removeSelectionOverlay, selectArea } from './selection-overlay'
 
 /**
  * How long the page waits for the next capture command before restoring
@@ -23,6 +24,11 @@ let originalScrollY: number | null = null
 let watchdog: ReturnType<typeof setTimeout> | null = null
 
 function restorePage(): void {
+  // The selection overlay is page state exactly like a hidden header is: if
+  // the service worker dies while it is up, nothing else is left alive to take
+  // it down and the user is stranded on a dimmed page that eats every click.
+  // Putting it here means the watchdog covers it for free.
+  removeSelectionOverlay(document)
   restoreFixedElements(document)
   if (originalScrollY !== null) {
     window.scrollTo({ top: originalScrollY, left: 0, behavior: 'instant' as ScrollBehavior })
@@ -74,6 +80,32 @@ async function handle(request: ContentRequest): Promise<ContentResponse> {
     return { ok: true }
   }
 
+  // Area selection. Handled above the guard below, with `measure` and
+  // `copyImage`, because it *starts* a capture rather than continuing one: it
+  // arrives with `originalScrollY` still null by definition, so behind the
+  // guard every selection the extension ever offered would be refused with
+  // "capture abandoned".
+  //
+  // Unlike `copyImage` it does arm the watchdog, because unlike `copyImage` it
+  // leaves the page altered for as long as the user takes to drag -- and an
+  // MV3 worker evicted during that drag would otherwise strand the overlay on
+  // the page forever. `restorePage` tears the overlay down, so the existing
+  // watchdog needs nothing new to cover this. The timer is cleared on the way
+  // out: the reply ends the command, and a timer outliving it would scroll a
+  // page that is no longer in a capture.
+  //
+  // A cancel is not a failure -- `{ ok: true, rect: null }`, and the service
+  // worker delivers nothing and shows a neutral badge.
+  if (request.type === 'selectArea') {
+    armWatchdog()
+    try {
+      const rect = await selectArea(document)
+      return { ok: true, rect }
+    } finally {
+      clearWatchdog()
+    }
+  }
+
   // The watchdog has already fired: this page is no longer in a capture, and
   // `originalScrollY === null` is how it knows -- only `measure` sets it, and
   // only `restore`/`restorePage` clear it. Obeying `hideFixed`/`scrollTo` from
@@ -89,8 +121,8 @@ async function handle(request: ContentRequest): Promise<ContentResponse> {
   // check at every call site.
   //
   // `measure` is exempt: it is what starts a capture, so a null latch there is
-  // the normal case, not an abandoned one. `copyImage` is exempt too, and has
-  // already returned above.
+  // the normal case, not an abandoned one. `copyImage` and `selectArea` are
+  // exempt too, and have already returned above.
   //
   // This used to be reachable in ordinary use, not just after an eviction:
   // `finishCapture` ran the download and did not respond until it reached a
@@ -129,11 +161,6 @@ async function handle(request: ContentRequest): Promise<ContentResponse> {
     case 'scrollTo':
       await scrollToStep(window, request.y)
       return { ok: true }
-    case 'selectArea':
-      // TODO(Task 2): mount the selection overlay and resolve with its rect
-      // (or `null` on cancel). Placeholder only exists to keep this switch
-      // exhaustive over `ContentRequest` now that `selectArea` is a member.
-      return { ok: false, error: 'not implemented' }
   }
 }
 
