@@ -5,7 +5,7 @@
 
 A Chrome extension that captures the **entire scrollable page** — not just the
 visible viewport — in one click, and delivers the image to the clipboard, as a
-PNG download, or both.
+download, or both. Since 1.1.0 it can also capture just the visible area.
 
 ## What it does
 
@@ -21,6 +21,36 @@ the extension:
 
 The page is left exactly as it was found: scroll position and any fixed
 header are restored once the capture finishes (or fails partway through).
+
+### Capture modes
+
+| Mode | What it captures | How to run it |
+|---|---|---|
+| Full page | The whole scrollable document, stitched from several frames | Toolbar click, `Ctrl/Cmd+Shift+Y`, or right-click the toolbar icon → **Capture full page** |
+| Visible area | One frame of what is on screen right now | `Ctrl/Cmd+Shift+U`, or right-click the toolbar icon → **Capture visible area** |
+
+The toolbar click and `Ctrl/Cmd+Shift+Y` use whichever mode you set as the
+default on the options page; the menu items and `Ctrl/Cmd+Shift+U` name a mode
+outright and override that default for one capture. Both shortcuts are
+suggestions — if another extension already claimed the combination, Chrome
+leaves it unassigned and you can set your own at `chrome://extensions/shortcuts`.
+
+A visible-area capture never injects anything into the page, never scrolls it
+and never changes a style, so there is nothing to restore afterwards. Its
+downloads are named with a `-viewport` suffix, so the two modes are told apart
+on disk.
+
+### Output size and format
+
+- **Scale.** Frames are captured in device pixels, so on a hidpi screen the
+  stitched image is naturally 2×. **1× is the default** — the finished image is
+  divided back down, which typically cuts the file to a quarter of the size and
+  is a no-op on an ordinary display. Choose 2× on the options page to keep every
+  device pixel.
+- **Download format.** PNG (default), JPEG or WebP, at a fixed quality of 0.85.
+  The file extension follows the format (`.png`, `.jpg`, `.webp`).
+- **The clipboard is always PNG**, whatever the download format, because
+  `image/png` is the only image type that pastes reliably everywhere.
 
 ## Why scroll-and-stitch, not `chrome.debugger`
 
@@ -68,7 +98,8 @@ pnpm dev
 - `src/content` — the content script injected into the page being captured.
 - `src/offscreen` — the offscreen document that stitches frames on a canvas.
 - `src/core` — pure, environment-agnostic logic (frame planning, geometry).
-- `src/options` — the options page (React) where sinks are configured.
+- `src/options` — the options page (React) where the sinks, the default
+  capture mode, the scale and the download format are configured.
 - `src/shared` — code shared across the above.
 
 ## Testing

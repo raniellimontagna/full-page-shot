@@ -8,15 +8,15 @@
 Extensão de Chrome que captura a página inteira — incluindo o conteúdo fora do viewport
 — em um clique, e entrega a imagem no clipboard, em download PNG, ou nos dois.
 
-**Pronto quando:** a extensão publicada na Chrome Web Store captura a página inteira em
-um clique e entrega a imagem conforme a preferência do usuário, sem deixar a página em
-estado alterado.
+**Pronto quando:** a extensão publicada na Chrome Web Store captura a página inteira — ou,
+desde a v1.1, só o viewport — em um clique e entrega a imagem conforme a preferência do
+usuário, sem deixar a página em estado alterado.
 
 ## Decisões de escopo
 
 | Decisão | Escolha | Motivo |
 |---|---|---|
-| Modo de captura | Full-page (scroll) apenas | É o diferencial; viewport puro já é resolvido pelo print do sistema operacional |
+| Modo de captura | Full-page (scroll) por padrão; viewport como segundo modo desde a v1.1 | Full-page é o diferencial; o viewport ganhou lugar por ser o mesmo fluxo de entrega (clipboard + download nomeado) em um caminho instantâneo |
 | Saída | Clipboard **e** download PNG, configurável | Cobre colar em ferramenta e arquivar |
 | Preview antes de salvar | Não | Um clique, sem interrupção |
 | Distribuição | Chrome Web Store, repo público | Mesmo padrão do `tab-switch` |
@@ -164,8 +164,54 @@ alterado. Falhar sem estragar a página é mais importante do que entregar a ima
 - **UI:** React na options page. É conveniência — reaproveita a base do `tab-switch` —
   não necessidade técnica. Uma options page com três checkboxes funcionaria em vanilla.
 - **Manifest:** V3.
-- **Permissões:** `activeTab`, `scripting`, `offscreen`, `downloads`, `clipboardWrite`.
-  Nenhuma permissão que dispare aviso agressivo na instalação.
+- **Permissões (v1.1, sete):** `activeTab`, `scripting`, `offscreen`, `downloads`,
+  `clipboardWrite`, `storage` e `contextMenus`. Nenhum `host_permissions`, e nenhuma
+  permissão que dispare aviso agressivo na instalação — `contextMenus` entrou na v1.1
+  apenas para o menu de botão direito no ícone da toolbar.
+
+## Modos de captura (v1.1)
+
+Dois modos, um único caminho de entrega:
+
+- **Full-page** (padrão): injeta o content script, mede, esconde elementos fixos, rola,
+  captura frame a frame, costura e restaura. Inalterado desde a v1.
+- **Viewport:** um `captureVisibleTab` do que já está na tela. Não injeta content script,
+  não mede, não rola, não esconde nada — e por isso **não tem restauração**: não há o que
+  desfazer. Também não pode ser truncado, porque um viewport está sempre muito abaixo dos
+  limites de canvas do Chrome.
+
+O modo de uma captura vem de três lugares, nesta ordem: o modo explícito do menu de
+contexto ou do atalho `capture-viewport`; senão a preferência `captureMode` da options
+page. O clique no ícone (e o `_execute_action`) não nomeia modo algum, logo usa a
+preferência.
+
+**Menu de contexto:** dois itens com `contexts: ['action']` — "Capture full page" e
+"Capture visible area". Aparecem só no botão direito sobre o ícone da extensão, nunca
+sobre a página que o usuário está lendo.
+
+**Atalhos:** `Ctrl/Cmd+Shift+Y` dispara a action (modo padrão do usuário) e
+`Ctrl/Cmd+Shift+U` dispara `capture-viewport`.
+
+O nome do arquivo distingue os dois: `<host>-<timestamp>-viewport.<ext>`. Sem o sufixo,
+duas capturas do mesmo host no mesmo segundo seriam indistinguíveis por nome e o Chrome
+numeraria uma delas em silêncio.
+
+## Tamanho da saída (v1.1)
+
+- **Escala 1× é o padrão.** O canvas é sempre costurado em pixels *de dispositivo*, então
+  numa tela hidpi ele já é uma imagem 2×. "1×" significa dividir de volta pelo
+  `devicePixelRatio` (no-op numa tela comum); "2×" significa entregar o canvas como está.
+  O redimensionamento acontece **uma vez só**, no canvas pronto — a aritmética de
+  costura (`page-metrics`, `stitch-plan`) nunca é informada da escala.
+- **O clipboard é sempre PNG.** `ClipboardItem` com `image/png` é o único tipo de imagem
+  amplamente colável; formatos com perda no clipboard simplesmente não colam na maioria
+  dos destinos. A preferência de formato vale **só para o download**.
+- **Formatos do download:** `png` (padrão), `jpeg` (`.jpg`) e `webp`. Qualidade fixa em
+  **0.85**, sem controle na UI: é o ponto em que o ganho de tamanho já aconteceu e o
+  artefato ainda não aparece em texto de captura de tela, e um slider a mais custaria mais
+  em decisão do usuário do que entregaria.
+- **Uma codificação por captura.** Quando o download também é PNG, o mesmo data URL vai
+  para os dois sinks em vez de a imagem ser codificada duas vezes.
 
 ## Testes
 
@@ -179,7 +225,13 @@ fixture:
 - página curta (um frame só);
 - página longa com header `position: fixed`;
 - página com lazy-load de imagens;
-- página cujo `scrollHeight` não é múltiplo do viewport.
+- página cujo `scrollHeight` não é múltiplo do viewport;
+- (v1.1) captura viewport numa página rolada: um frame só, nenhuma mensagem para a página,
+  nenhuma injeção de content script, scroll intacto;
+- (v1.1) 1× com `devicePixelRatio` 2: a imagem é exatamente metade do canvas em ambos os
+  eixos, e 2× entrega o canvas como costurado;
+- (v1.1) download `jpeg`/`webp`: os bytes no disco começam com o magic number do formato e
+  o clipboard continua sendo PNG.
 
 Sem a camada E2E, regressão visual só aparece em uso real.
 
@@ -250,7 +302,14 @@ Páginas extremamente longas ou em telas de DPI alto são o caso realista de se 
 
 ## Fora de escopo na v1
 
-- Captura só do viewport.
+> **Correção (2/set/2026, v1.1).** "Captura só do viewport" saiu desta lista: ela foi
+> implementada na v1.1. O motivo original — "o print do sistema operacional já resolve" —
+> não se sustentou no uso: o print do SO não entrega a imagem no clipboard *e* em arquivo
+> com nome padronizado, não respeita a preferência de escala, e obriga a sair da extensão
+> no meio de uma sequência de capturas. O modo viewport é um caminho separado e curto
+> (um `captureVisibleTab`, sem content script, sem scroll, sem restauração porque nada é
+> alterado), não um caso especial do full-page.
+
 - Captura de área selecionada ou de elemento específico.
 - Preview antes de salvar.
 - Anotação ou edição da imagem.
