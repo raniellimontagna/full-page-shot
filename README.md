@@ -5,7 +5,8 @@
 
 A Chrome extension that captures the **entire scrollable page** — not just the
 visible viewport — in one click, and delivers the image to the clipboard, as a
-download, or both. Since 1.1.0 it can also capture just the visible area.
+download, or both. Since 1.1.0 it can also capture just the visible area,
+and since 1.2.0 just an area you drag out with the mouse.
 
 ## What it does
 
@@ -28,17 +29,37 @@ header are restored once the capture finishes (or fails partway through).
 |---|---|---|
 | Full page | The whole scrollable document, stitched from several frames | Toolbar click, `Ctrl/Cmd+Shift+Y`, or right-click the toolbar icon → **Capture full page** |
 | Visible area | One frame of what is on screen right now | `Ctrl/Cmd+Shift+U`, or right-click the toolbar icon → **Capture visible area** |
+| Selected area | Just the rectangle you drag over the current screen | `Ctrl/Cmd+Shift+S`, or right-click the toolbar icon → **Capture selected area** |
 
 The toolbar click and `Ctrl/Cmd+Shift+Y` use whichever mode you set as the
-default on the options page; the menu items and `Ctrl/Cmd+Shift+U` name a mode
-outright and override that default for one capture. Both shortcuts are
-suggestions — if another extension already claimed the combination, Chrome
-leaves it unassigned and you can set your own at `chrome://extensions/shortcuts`.
+default on the options page; the menu items, `Ctrl/Cmd+Shift+U` and
+`Ctrl/Cmd+Shift+S` name a mode outright and override that default for one
+capture. All three shortcuts are suggestions — if another extension already
+claimed a combination, Chrome leaves it unassigned and you can set your own at
+`chrome://extensions/shortcuts`. (`Ctrl/Cmd+Shift+I` was deliberately *not*
+used for the selection: that is Chrome's own DevTools shortcut, and browser
+bindings beat extension ones, so the command would never have fired.)
 
 A visible-area capture never injects the content script, never scrolls it
-and never changes a style, so there is nothing to restore afterwards. Its
-downloads are named with a `-viewport` suffix, so the two modes are told apart
+and never changes a style, so there is nothing to restore afterwards. Downloads
+are named with a `-viewport` or `-selection` suffix, so the modes are told apart
 on disk.
+
+### Selecting an area
+
+Start a selection capture and the page dims; drag a rectangle over the part you
+want and release. Only what is on screen can be selected — a selection cannot
+scroll through the page, because scrolling mid-drag would move the content out
+from under the rectangle you framed. Use full-page mode for anything below the
+fold.
+
+Press **Esc**, click without dragging, or draw something under 4 pixels and the
+capture is simply called off: a grey `·` appears on the icon for a moment, and
+nothing is copied or saved. Cancelling is not an error, so it never shows the
+red failure badge.
+
+Scale and download format apply to a selection exactly as they do to the other
+two modes, and no extra permission is involved.
 
 ### Output size and format
 

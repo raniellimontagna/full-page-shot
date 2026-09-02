@@ -9,14 +9,14 @@ Extensão de Chrome que captura a página inteira — incluindo o conteúdo fora
 — em um clique, e entrega a imagem no clipboard, em download PNG, ou nos dois.
 
 **Pronto quando:** a extensão publicada na Chrome Web Store captura a página inteira — ou,
-desde a v1.1, só o viewport — em um clique e entrega a imagem conforme a preferência do
-usuário, sem deixar a página em estado alterado.
+desde a v1.1, só o viewport; desde a v1.2, só a área que o usuário arrastar — em um clique e
+entrega a imagem conforme a preferência do usuário, sem deixar a página em estado alterado.
 
 ## Decisões de escopo
 
 | Decisão | Escolha | Motivo |
 |---|---|---|
-| Modo de captura | Full-page (scroll) por padrão; viewport como segundo modo desde a v1.1 | Full-page é o diferencial; o viewport ganhou lugar por ser o mesmo fluxo de entrega (clipboard + download nomeado) em um caminho instantâneo |
+| Modo de captura | Full-page (scroll) por padrão; viewport desde a v1.1; área selecionada desde a v1.2 | Full-page é o diferencial; os outros dois ganharam lugar por serem o mesmo fluxo de entrega (clipboard + download nomeado) em caminhos mais curtos |
 | Saída | Clipboard sempre PNG; download em PNG/JPEG/WebP, configurável | Cobre colar em ferramenta e arquivar |
 | Preview antes de salvar | Não | Um clique, sem interrupção |
 | Distribuição | Chrome Web Store, repo público | Mesmo padrão do `tab-switch` |
@@ -164,14 +164,16 @@ alterado. Falhar sem estragar a página é mais importante do que entregar a ima
 - **UI:** React na options page. É conveniência — reaproveita a base do `tab-switch` —
   não necessidade técnica. Uma options page com três checkboxes funcionaria em vanilla.
 - **Manifest:** V3.
-- **Permissões (v1.1, sete):** `activeTab`, `scripting`, `offscreen`, `downloads`,
+- **Permissões (sete, inalteradas desde a v1.1):** `activeTab`, `scripting`, `offscreen`, `downloads`,
   `clipboardWrite`, `storage` e `contextMenus`. Nenhum `host_permissions`, e nenhuma
   permissão que dispare aviso agressivo na instalação — `contextMenus` entrou na v1.1
-  apenas para o menu de botão direito no ícone da toolbar.
+  apenas para o menu de botão direito no ícone da toolbar. A seleção de área da v1.2 **não
+  acrescentou nenhuma permissão**: ela reusa `scripting` (o overlay é o mesmo content script)
+  e `activeTab` (o `captureVisibleTab` que já existia).
 
-## Modos de captura (v1.1)
+## Modos de captura (v1.1, ampliado na v1.2)
 
-Dois modos, um único caminho de entrega:
+Três modos, um único caminho de entrega:
 
 - **Full-page** (padrão): injeta o content script, mede, esconde elementos fixos, rola,
   captura frame a frame, costura e restaura. Inalterado desde a v1.
@@ -179,21 +181,35 @@ Dois modos, um único caminho de entrega:
   não mede, não rola, não esconde nada — e por isso **não tem restauração**: não há o que
   desfazer. Também não pode ser truncado, porque um viewport está sempre muito abaixo dos
   limites de canvas do Chrome.
+- **Seleção de área (v1.2):** o usuário arrasta um retângulo sobre o que está na tela e
+  recebe só aquela região. Detalhado na seção "Seleção de área" abaixo.
 
 O modo de uma captura vem de três lugares, nesta ordem: o modo explícito do menu de
-contexto ou do atalho `capture-viewport`; senão a preferência `captureMode` da options
-page. O clique no ícone (e o `_execute_action`) não nomeia modo algum, logo usa a
-preferência.
+contexto ou dos atalhos `capture-viewport`/`capture-selection`; senão a preferência
+`captureMode` da options page. O clique no ícone (e o `_execute_action`) não nomeia modo
+algum, logo usa a preferência.
 
-**Menu de contexto:** dois itens com `contexts: ['action']` — "Capture full page" e
-"Capture visible area". Aparecem só no botão direito sobre o ícone da extensão, nunca
-sobre a página que o usuário está lendo.
+**Menu de contexto:** três itens com `contexts: ['action']` — "Capture full page",
+"Capture visible area" e "Capture selected area". Aparecem só no botão direito sobre o
+ícone da extensão, nunca sobre a página que o usuário está lendo.
 
-**Atalhos:** `Ctrl/Cmd+Shift+Y` dispara a action (modo padrão do usuário) e
-`Ctrl/Cmd+Shift+U` dispara `capture-viewport`.
+**Atalhos:**
 
-O nome do arquivo distingue os dois: `<host>-<timestamp>-viewport.<ext>`. Sem o sufixo,
-duas capturas do mesmo host no mesmo segundo seriam indistinguíveis por nome e o Chrome
+| Atalho | Comando | Modo |
+|---|---|---|
+| `Ctrl/Cmd+Shift+Y` | `_execute_action` | o modo padrão do usuário (preferência) |
+| `Ctrl/Cmd+Shift+U` | `capture-viewport` | viewport |
+| `Ctrl/Cmd+Shift+S` | `capture-selection` | seleção de área |
+
+`Ctrl/Cmd+Shift+I` foi deliberadamente evitado para a seleção: é o atalho do DevTools do
+próprio Chrome. Bindings do navegador vencem os de extensão — o Chrome aceita a
+declaração, lista o atalho em `chrome://extensions/shortcuts` e **nunca o dispara**, então
+o comando teria ido para produção silenciosamente morto. Nenhum atalho é obrigatório: os
+três são sugestões que o usuário pode remapear nessa mesma página.
+
+O nome do arquivo distingue os três: `<host>-<timestamp>-viewport.<ext>` e
+`<host>-<timestamp>-selection.<ext>` (full-page não leva sufixo). Sem o sufixo, duas
+capturas do mesmo host no mesmo segundo seriam indistinguíveis por nome e o Chrome
 numeraria uma delas em silêncio.
 
 ## Tamanho da saída (v1.1)
@@ -213,6 +229,68 @@ numeraria uma delas em silêncio.
 - **Uma codificação por captura.** Quando o download também é PNG, o mesmo data URL vai
   para os dois sinks em vez de a imagem ser codificada duas vezes.
 
+## Seleção de área (v1.2)
+
+O terceiro modo: o usuário arrasta um retângulo sobre a tela e recebe só aquela região,
+pelos mesmos sinks, na mesma escala e no mesmo formato dos outros dois.
+
+**Fluxo.** Injeta o content script → o content script monta o overlay e devolve o
+retângulo em pixels CSS (ou `null`) → o service worker faz **um** `captureVisibleTab` →
+o offscreen document recorta o frame e exporta. Nada mais: nenhum `measure`, nenhum
+`hideFixed`, nenhum `scrollTo`, nenhum `restore` depois de uma seleção respondida.
+
+**Só o visível, e por quê.** A seleção é sempre um recorte do viewport atual, nunca uma
+região que atravessa o scroll. Selecionar através da página exigiria rolar *enquanto* o
+usuário arrasta, e é justamente o scroll que muda o que está sob o cursor: o retângulo que
+a pessoa enquadrou deixaria de ser o retângulo capturado. Quem quer o que está fora da
+tela tem o modo full-page. Isso também garante que o recorte **nunca pode ser truncado** —
+um viewport está sempre muito abaixo dos limites de canvas do Chrome.
+
+**Cancelar não é falha.** `Esc`, um clique sem arrasto, ou um retângulo menor que
+`MIN_SELECTION_PX = 4` em qualquer dimensão resolvem em `null`. O service worker não
+captura, não codifica, não entrega e não erra: mostra um badge **neutro** (`·` cinza, 1,5 s)
+e encerra. O `✕` vermelho continua significando "algo quebrou", nunca "você desistiu" — um
+badge de erro depois de um `Esc` treinaria o usuário a ignorar o badge de erro.
+
+**O overlay nunca entra na foto.** Ele vive num shadow root (`<fps-selection-overlay>`,
+`position: fixed` e `z-index` máximo, tudo inline com `!important` para que nenhuma regra
+da página o desloque), e é removido no `finally` — em qualquer caminho, inclusive no
+cancelamento. A promessa do content script só resolve **dois `requestAnimationFrame`
+depois** da remoção: um frame agenda a pintura seguinte, o segundo espera ela ter
+acontecido. Sem essa espera, o service worker chamaria `captureVisibleTab` no instante em
+que a resposta chega e a borda branca do retângulo apareceria na imagem entregue. Isso é
+verificável só em navegador real, e está travado em `e2e/selection.spec.ts`: uma captura
+crua tirada no meio do arrasto **mostra** o overlay, e a imagem entregue não tem um pixel
+dele.
+
+**Eventos ficam com o overlay.** `pointerdown`, `pointermove`, `pointerup`, `keydown` e
+`wheel` são ouvidos na fase de captura e sofrem `preventDefault` + `stopImmediatePropagation`
+enquanto o overlay está montado. Sem isso, o `Esc` que cancela a captura fecharia também o
+modal da página, e a roda do mouse rolaria a página por baixo de um retângulo fixo ao
+viewport — em ambos os casos uma captura cancelada teria alterado a página, que é
+exatamente o que não pode acontecer.
+
+**Watchdog re-armado por atividade.** O content script já derruba uma captura abandonada
+(service worker despejado) depois de `RESTORE_WATCHDOG_MS = 10 s`. Como o overlay pode
+ficar de pé o tempo que o usuário quiser, o timer mede **silêncio da página**, não relógio:
+qualquer atividade de ponteiro o re-arma (no máximo uma vez por segundo). Quem passa quinze
+segundos decidindo o enquadramento continua com o overlay; um worker despejado não gera
+evento nenhum e continua expirando.
+
+**Aritmética do recorte.** O retângulo sai do overlay em pixels CSS relativos ao viewport;
+o offscreen document — o único lugar que conhece ao mesmo tempo o `devicePixelRatio` e as
+dimensões reais do frame — converte para pixels de device com `round` **em cada aresta**
+(`round((x + width) × dpr)`, não `round(x × dpr) + round(width × dpr)`), depois clampa ao
+frame. Arredondar aresta por aresta faz duas seleções vizinhas dividirem a mesma borda sem
+buraco nem sobreposição. A escala (`1×`/`2×`) e o formato se aplicam depois, no canvas já
+recortado, exatamente como nos outros dois modos.
+
+**Limitação: `transform`/`filter` em `html` ou `body`.** Qualquer uma dessas propriedades
+num ancestral cria um containing block novo, e o `position: fixed` do host passa a
+resolver contra ele em vez de contra o viewport — o overlay aparece deslocado. Nenhum
+`!important` no host resolve isso; é uma regra do CSS, não uma disputa de especificidade.
+Raro, e sem correção possível de dentro de um content script.
+
 ## Testes
 
 **Unitários (Vitest):** `page-metrics` e `stitcher`. É onde mora o erro de off-by-one que
@@ -231,7 +309,17 @@ fixture:
 - (v1.1) 1× com `devicePixelRatio` 2: a imagem é exatamente metade do canvas em ambos os
   eixos, e 2× entrega o canvas como costurado;
 - (v1.1) download `jpeg`/`webp`: os bytes no disco começam com o magic number do formato e
-  o clipboard continua sendo PNG.
+  o clipboard continua sendo PNG;
+- (v1.2) seleção arrastada com ponteiro real: a imagem entregue tem exatamente o tamanho da
+  região, o scroll não se move, o overlay some do DOM e o arquivo sai com sufixo
+  `-selection`; arrasto invertido dá o mesmo retângulo;
+- (v1.2) o overlay é provado **visível** numa captura crua tirada no meio do arrasto e
+  **ausente** da imagem entregue — a única forma de verificar a espera de dois
+  `requestAnimationFrame`;
+- (v1.2) `Esc` e arrasto sub-mínimo cancelam: badge neutro, zero download, zero clipboard,
+  nenhum erro, e o `keydown` não vaza para a página;
+- (v1.2) deliberação longa (acima do watchdog de 10 s, com o ponteiro em movimento) não
+  derruba o overlay.
 
 Sem a camada E2E, regressão visual só aparece em uso real.
 
@@ -310,7 +398,16 @@ Páginas extremamente longas ou em telas de DPI alto são o caso realista de se 
 > (um `captureVisibleTab`, sem content script, sem scroll, sem restauração porque nada é
 > alterado), não um caso especial do full-page.
 
-- Captura de área selecionada ou de elemento específico.
+> **Correção (2/set/2026, v1.2).** "Captura de área selecionada" saiu desta lista: foi
+> implementada na v1.2 e tem seção própria acima. O item original juntava duas coisas que
+> se separaram no uso — selecionar **uma região arrastada** e selecionar **um elemento do
+> DOM**. A região arrastada acabou custando pouco: é o caminho do viewport com um recorte
+> no fim, sem permissão nova e sem tocar na aritmética de costura. O que continua fora é a
+> seleção por elemento, que exigiria percorrer o DOM sob o cursor, lidar com `overflow`,
+> shadow roots e elementos maiores que o viewport — outro problema, não uma variação
+> deste.
+
+- Captura de elemento específico (um `<div>`, uma tabela) pelo DOM.
 - Preview antes de salvar.
 - Anotação ou edição da imagem.
 - Formatos além de PNG.

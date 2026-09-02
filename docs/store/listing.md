@@ -3,10 +3,10 @@
 ## Short description (≤ 132 characters)
 
 ```
-Capture a full scrollable page or just the visible area — copy to clipboard or save. No accounts, no tracking, all local.
+Capture a full scrollable page, the visible area, or an area you drag — copy to clipboard or save. No tracking, all local.
 ```
 
-Character count: 123 (limit 132).
+Character count: 122 (limit 132).
 
 ## Detailed description
 
@@ -20,16 +20,26 @@ extension measures the page, scrolls through it in segments, captures each
 segment, and stitches them into one seamless image entirely inside your
 browser. No server, no upload, no account.
 
-TWO CAPTURE MODES
+THREE CAPTURE MODES
   • Full page — the whole scrollable document
   • Visible area — just what is on screen, in one instant capture
-Right-click the toolbar icon to pick a mode for a single capture, press
-Ctrl+Shift+U (Cmd+Shift+U) for the visible area, or set your default mode on
-the options page.
+  • Selected area — drag a rectangle over the screen and get only that
+Right-click the toolbar icon to pick a mode for a single capture, or set your
+default mode on the options page. Shortcuts:
+  • Ctrl+Shift+Y (Cmd+Shift+Y) — your default mode
+  • Ctrl+Shift+U (Cmd+Shift+U) — visible area
+  • Ctrl+Shift+S (Cmd+Shift+S) — selected area
 
-Both shortcuts are suggested defaults: if another extension already claimed
-one, Chrome leaves it unassigned and you can set your own at
+All three shortcuts are suggested defaults: if another extension already
+claimed one, Chrome leaves it unassigned and you can set your own at
 chrome://extensions/shortcuts.
+
+SELECTING AN AREA
+The page dims; drag a rectangle and release. Press Esc, click without
+dragging, or draw something tiny and the capture is simply called off — a grey
+dot appears on the icon for a moment and nothing is copied or saved.
+Cancelling is never treated as an error. A selection covers what is on screen
+only; use full page for anything below the fold.
 
 OUTPUT
 Choose what happens after each capture from the options page:
@@ -53,6 +63,8 @@ LIMITATIONS
   • Full-page capture works on the page's own scroll (the normal case).
     Pages that scroll a nested container instead of the document — some
     single-page apps — will currently capture only the visible viewport.
+  • A selected area is taken from what is currently on screen; a selection
+    cannot be dragged past the edge of the viewport.
   • Chrome-internal pages (chrome://, the Web Store, etc.) cannot be
     captured — this is a Chrome platform restriction, not a limitation of
     the extension.
@@ -82,7 +94,12 @@ uploaded — see the comment above `isE2eBuild` in `src/manifest.config.ts`.)
 | `downloads` | Saves the resulting PNG to the user's Downloads folder, when the user has turned that output on in the options page. |
 | `clipboardWrite` | Declared to support copying the resulting PNG to the clipboard when the user has that output turned on. **Maintainer note:** the actual clipboard write happens via `navigator.clipboard.write()` in the content script injected into the captured tab (`src/content/clipboard.ts`), which may not need this extension permission at all — it runs in a focused page context. Whether it can be dropped is still open, and **the end-to-end suite cannot answer it**: `e2e/helpers/extension.ts` grants clipboard permissions to the Playwright browser context itself, so `pnpm test:e2e` passes with or without the manifest permission. Deciding it requires a manual check in real Chrome: remove the permission, `pnpm build`, load `dist/` unpacked, set the options page to clipboard-only, capture a page, and paste into a real application. Only if that paste works should the permission be dropped from `src/manifest.config.ts`. |
 | `storage` | Remembers the user's preferences (clipboard / download, default capture mode, output scale, download format) between sessions via `chrome.storage.sync`. |
-| `contextMenus` | Adds a right-click menu on the extension's toolbar icon so the user can choose the capture mode — full page or visible area — for a single capture. The items are scoped to the toolbar icon (`contexts: ['action']`) and never appear on the page itself. |
+| `contextMenus` | Adds a right-click menu on the extension's toolbar icon so the user can choose the capture mode — full page, visible area or selected area — for a single capture. The items are scoped to the toolbar icon (`contexts: ['action']`) and never appear on the page itself. |
+
+Seven permissions, unchanged since 1.1.0: the 1.2.0 area-selection mode needs
+none of its own. The selection overlay is drawn by the same content script
+`scripting` already injects, and the frame it crops comes from the same
+`activeTab` capture the other two modes use.
 
 ## Assets checklist
 
