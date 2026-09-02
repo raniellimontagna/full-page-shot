@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PREFS } from '../../src/shared/prefs'
 import {
   BADGE_FAILURE,
+  BADGE_NEUTRAL,
   BADGE_PARTIAL,
   BADGE_SUCCESS,
+  badgeForCancelledCapture,
   DOWNLOAD_COMPLETION_TIMEOUT_MS,
   badgeForCapture,
   badgeForDelivery,
@@ -440,5 +442,33 @@ describe('badgeForCapture', () => {
   // Nothing arrived, so how complete it would have been is beside the point.
   it('keeps a failed delivery a failure', () => {
     expect(badgeForCapture(undelivered, true)).toEqual(BADGE_FAILURE)
+  })
+})
+
+describe('badgeForCancelledCapture', () => {
+  // The rule the whole selection mode hangs on: Esc, a click without a drag,
+  // or a drag too small to be a selection are all the user saying "no". A ✕
+  // there would report a bug that did not happen, and send the user looking
+  // for a file they deliberately did not ask for.
+  it('is neutral, never the failure badge', () => {
+    expect(badgeForCancelledCapture()).toEqual(BADGE_NEUTRAL)
+    expect(badgeForCancelledCapture()).not.toEqual(BADGE_FAILURE)
+  })
+
+  // A fourth state needs a fourth glyph: three of the four rounded together
+  // would make the badge unreadable, which is the only thing it is for.
+  it('shares its glyph with none of the three delivery badges', () => {
+    const glyphs = [BADGE_SUCCESS.text, BADGE_FAILURE.text, BADGE_PARTIAL.text]
+    expect(glyphs).not.toContain(BADGE_NEUTRAL.text)
+    const colors = [BADGE_SUCCESS.color, BADGE_FAILURE.color, BADGE_PARTIAL.color]
+    expect(colors).not.toContain(BADGE_NEUTRAL.color)
+  })
+
+  // Nothing was delivered and nothing went wrong, so the badge has less to say
+  // than any other and should get out of the way sooner.
+  it('clears faster than the badges that report a real outcome', () => {
+    expect(BADGE_NEUTRAL.clearAfterMs).toBe(1500)
+    expect(BADGE_SUCCESS.clearAfterMs).toBeUndefined()
+    expect(BADGE_FAILURE.clearAfterMs).toBeUndefined()
   })
 })

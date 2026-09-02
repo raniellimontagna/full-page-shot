@@ -204,12 +204,28 @@ export async function deliverCapture(
 export interface Badge {
   text: string
   color: string
+  /**
+   * How long the badge stays up, when the default is wrong for it.
+   *
+   * Only the cancel badge sets this. Every other badge reports something that
+   * happened -- a file that landed, a sink that failed, a page that was
+   * clamped -- and the user may well be looking away when it does; a cancel
+   * reports something the user did themselves, one gesture ago, and has no
+   * business sitting on the toolbar for as long.
+   */
+  clearAfterMs?: number
 }
 
 export const BADGE_SUCCESS: Badge = { text: '✓', color: '#1e8e3e' }
 export const BADGE_FAILURE: Badge = { text: '✕', color: '#b3261e' }
 /** Amber, and neither of the other two glyphs: a split result is its own state. */
 export const BADGE_PARTIAL: Badge = { text: '!', color: '#f9ab00' }
+/**
+ * Grey, a fourth glyph, and gone in 1.5 s: nothing happened, and nothing went
+ * wrong. Deliberately quiet -- it exists only so the toolbar acknowledges the
+ * gesture rather than appearing to have ignored it.
+ */
+export const BADGE_NEUTRAL: Badge = { text: '·', color: '#5f6368', clearAfterMs: 1500 }
 
 /**
  * Encodes the delivery honestly.
@@ -248,6 +264,23 @@ export function badgeForCapture(result: DeliveryResult, truncated: boolean): Bad
   if (!truncated) return delivery
   if (delivery === BADGE_FAILURE) return BADGE_FAILURE
   return BADGE_PARTIAL
+}
+
+/**
+ * The badge for a capture the user called off.
+ *
+ * Its own function, not a flag on `badgeForCapture`, because a cancel has no
+ * `DeliveryResult` to summarise: no sink was attempted, no image exists, and
+ * the honest reading of "zero of zero sinks failed" would be ✓ -- a green tick
+ * for a screenshot that was never taken. Selection mode's cancels are ordinary
+ * (Esc, a click without a drag, a drag too small to mean anything), so this is
+ * a routine outcome and ✕ would be a lie in the other direction: it would send
+ * the user hunting for a bug, or for a file they deliberately did not ask for.
+ *
+ * It is called *instead of* `badgeForCapture`, never alongside it.
+ */
+export function badgeForCancelledCapture(): Badge {
+  return BADGE_NEUTRAL
 }
 
 /**

@@ -49,7 +49,7 @@ describe('manifest', () => {
   // so the shortcut would be inert.
   it('drives the default-mode shortcut through the reserved action command', () => {
     expect(Object.keys(manifest.commands ?? {}).sort()).toEqual(
-      ['_execute_action', 'capture-viewport'].sort(),
+      ['_execute_action', 'capture-viewport', 'capture-selection'].sort(),
     )
   })
 
@@ -62,6 +62,28 @@ describe('manifest', () => {
       default: 'Ctrl+Shift+U',
       mac: 'Command+Shift+U',
     })
+  })
+
+  // The third mode gets the third shortcut. Ctrl+Shift+I / Cmd+Shift+I is not
+  // an extension command in stock Chrome (DevTools binds it at the browser
+  // level, and Chrome refuses to hand a browser-level accelerator to an
+  // extension only for reserved chords, which this is not); if another
+  // extension claimed it first Chrome leaves it unbound rather than stealing
+  // it, and the user can rebind at chrome://extensions/shortcuts.
+  it('binds a third shortcut to area selection', () => {
+    const command = manifest.commands?.['capture-selection']
+    expect(command).toBeDefined()
+    expect(command?.suggested_key).toEqual({
+      default: 'Ctrl+Shift+I',
+      mac: 'Command+Shift+I',
+    })
+  })
+
+  // Three modes, three commands -- and still the same seven permissions. The
+  // selection overlay runs in the content script the extension already injects
+  // under `activeTab`, so the third mode costs the user nothing to grant.
+  it('adds no permission for the third capture mode', () => {
+    expect(manifest.permissions).toHaveLength(7)
   })
 
   it('does not declare static content scripts', () => {

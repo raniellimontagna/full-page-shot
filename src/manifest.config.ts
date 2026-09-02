@@ -72,6 +72,17 @@ export default defineManifest({
       suggested_key: { default: 'Ctrl+Shift+U', mac: 'Command+Shift+U' },
       description: 'Capture visible area',
     },
+    // The third mode, dispatched through the same `MODE_BY_ID` table as the
+    // menu item of the same id. Ctrl+Shift+I / Cmd+Shift+I is not an extension
+    // command in stock Chrome; a user who would rather keep it for DevTools
+    // (which binds it at the browser level, above the extension) can rebind
+    // this at chrome://extensions/shortcuts, which is also where it lands if
+    // another extension claimed the combination first. No new permission: the
+    // overlay runs in the content script `activeTab` already allows.
+    'capture-selection': {
+      suggested_key: { default: 'Ctrl+Shift+I', mac: 'Command+Shift+I' },
+      description: 'Capture selected area',
+    },
   },
   options_page: 'src/options/options.html',
   action: {

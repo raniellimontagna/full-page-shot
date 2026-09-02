@@ -16,12 +16,15 @@
 import CONTENT_SCRIPT_FILE from '../content/content-script.ts?script&iife'
 import { runCapture, type EncodeOptions } from './capture-loop'
 import { runViewportCapture } from './viewport-capture'
+import { runSelectionCapture } from './selection-capture'
 import {
+  badgeForCancelledCapture,
   badgeForCapture,
   copyViaContentScript,
   deliverImages,
   downloadDataUrl,
   BADGE_FAILURE,
+  type Badge,
   type CaptureImages,
 } from './sinks'
 import { createSingleFlight } from './single-flight'
@@ -124,15 +127,23 @@ function makeOffscreenCloser(): () => Promise<void> {
  * cleanup that follows it and leak the document (plus an unhandled rejection).
  * A badge is cosmetic; it must never be able to take down cleanup.
  */
-async function setBadge(tabId: number, text: string, color: string): Promise<void> {
+async function setBadge(tabId: number, badge: Badge): Promise<void> {
   try {
-    await chrome.action.setBadgeBackgroundColor({ tabId, color })
-    await chrome.action.setBadgeText({ tabId, text })
+    await chrome.action.setBadgeBackgroundColor({ tabId, color: badge.color })
+    await chrome.action.setBadgeText({ tabId, text: badge.text })
   } catch {
     return
   }
-  setTimeout(() => void chrome.action.setBadgeText({ tabId, text: '' }).catch(() => {}), 3000)
+  setTimeout(
+    () => void chrome.action.setBadgeText({ tabId, text: '' }).catch(() => {}),
+    // Each badge decides how long it deserves; only the cancel badge asks for
+    // anything but the default.
+    badge.clearAfterMs ?? BADGE_CLEAR_MS,
+  )
 }
+
+/** How long a badge that reports a real outcome stays up. */
+const BADGE_CLEAR_MS = 3000
 
 const captureSingleFlight = createSingleFlight()
 
@@ -159,7 +170,7 @@ export async function captureTab(tab: chrome.tabs.Tab, mode?: CaptureMode): Prom
   const url = tab.url
   if (tabId === undefined) return
   if (!isCapturableUrl(url)) {
-    await setBadge(tabId, BADGE_FAILURE.text, BADGE_FAILURE.color)
+    await setBadge(tabId, BADGE_FAILURE)
     return
   }
 
@@ -173,7 +184,7 @@ export async function captureTab(tab: chrome.tabs.Tab, mode?: CaptureMode): Prom
         '[full-page-shot] a capture is already running; ignoring this one. ' +
           'Captures share one offscreen canvas, so they cannot overlap.',
       )
-      await setBadge(tabId, BADGE_FAILURE.text, BADGE_FAILURE.color)
+      await setBadge(tabId, BADGE_FAILURE)
     },
   )
 }
@@ -235,7 +246,41 @@ async function runOneCapture(
     let images: CaptureImages
     let truncated = false
 
-    if (mode === 'viewport') {
+    if (mode === 'selection') {
+      const outcome = await runSelectionCapture(
+        {
+          // The full path's injection, verbatim -- the overlay is a real
+          // module, not the one-expression `func:` probe the viewport path
+          // gets away with.
+          injectContentScript: async () => {
+            await chrome.scripting.executeScript({
+              target: { tabId },
+              files: [contentScriptPath()],
+            })
+          },
+          sendToContent: (request: ContentRequest) =>
+            chrome.tabs.sendMessage(tabId, request) as Promise<ContentResponse>,
+          captureVisibleTab,
+          sendToOffscreen,
+          ensureOffscreen,
+          getDevicePixelRatio: () => tabDevicePixelRatio(tabId),
+          isTabStillActive: async () => (await chrome.tabs.get(tabId)).active,
+        },
+        encode,
+      )
+
+      // Cancel is not failure. The user pressed Esc, clicked without dragging,
+      // or drew something too small to be a region: nothing was captured, so
+      // there is nothing to name, deliver or badge as an outcome. Returning
+      // here skips the whole delivery block -- and the `finally` below still
+      // runs, closing an offscreen document that in this case was never even
+      // created.
+      if (outcome.status === 'cancelled') {
+        await setBadge(tabId, badgeForCancelledCapture())
+        return
+      }
+      images = outcome
+    } else if (mode === 'viewport') {
       images = await runViewportCapture(
         {
           captureVisibleTab,
@@ -279,11 +324,10 @@ async function runOneCapture(
       },
     )
 
-    const badge = badgeForCapture(delivery, truncated)
-    await setBadge(tabId, badge.text, badge.color)
+    await setBadge(tabId, badgeForCapture(delivery, truncated))
   } catch (error) {
     console.error('[full-page-shot]', error)
-    await setBadge(tabId, BADGE_FAILURE.text, BADGE_FAILURE.color)
+    await setBadge(tabId, BADGE_FAILURE)
   } finally {
     // In `finally` so no failure between here and the badge can skip it and
     // strand the offscreen document. A no-op on the happy path, where it has
@@ -364,12 +408,13 @@ async function runFullPageCapture(
 //
 // Three entry points, one function. The toolbar click (and its
 // `_execute_action` shortcut) names no mode, so it takes the user's default;
-// the two menu items and the `capture-viewport` shortcut each name one, which
-// overrides that default for this capture only.
+// the three menu items and the `capture-viewport`/`capture-selection` shortcuts
+// each name one, which overrides that default for this capture only.
 // ---------------------------------------------------------------------------
 
 const MENU_FULL = 'capture-full'
 const MENU_VIEWPORT = 'capture-viewport'
+const MENU_SELECTION = 'capture-selection'
 
 /**
  * The menu ids that name a mode, and the mode each names.
@@ -382,6 +427,7 @@ const MENU_VIEWPORT = 'capture-viewport'
 const MODE_BY_ID: Record<string, CaptureMode> = {
   [MENU_FULL]: 'full',
   [MENU_VIEWPORT]: 'viewport',
+  [MENU_SELECTION]: 'selection',
 }
 
 /**
@@ -393,7 +439,7 @@ const MODE_BY_ID: Record<string, CaptureMode> = {
  * reloaded rather than reinstalled. Removing first makes this idempotent, so
  * running it on both `onInstalled` and `onStartup` is safe.
  *
- * `contexts: ['action']` scopes both items to the toolbar icon. They never
+ * `contexts: ['action']` scopes all three items to the toolbar icon. They never
  * appear on the page itself, so this adds nothing to a right-click in the
  * content the user is reading.
  */
@@ -403,6 +449,11 @@ function createContextMenus(): void {
     chrome.contextMenus.create({
       id: MENU_VIEWPORT,
       title: 'Capture visible area',
+      contexts: ['action'],
+    })
+    chrome.contextMenus.create({
+      id: MENU_SELECTION,
+      title: 'Capture selected area',
       contexts: ['action'],
     })
   })
