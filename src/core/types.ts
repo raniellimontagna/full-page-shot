@@ -1,6 +1,14 @@
 export interface PageMeasurements {
   scrollWidth: number
   scrollHeight: number
+  /**
+   * CSS pixels, and **not necessarily an integer**. These come from
+   * `visualViewport`, which reports the viewport's true fractional size;
+   * `window.innerWidth`/`innerHeight` round it, and that rounding is what
+   * produced unpainted rows at fractional device pixel ratios. Anything
+   * consuming these must be sound for fractional input -- see the property
+   * sweeps in `tests/core/stitch-plan.test.ts`.
+   */
   viewportWidth: number
   viewportHeight: number
   devicePixelRatio: number

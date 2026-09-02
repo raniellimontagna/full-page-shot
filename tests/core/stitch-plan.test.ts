@@ -217,7 +217,13 @@ describe('computeFramePlacements', () => {
   // coverage.
   it('property: every canvas row is covered across the dpr/viewport/scroll grid', () => {
     const dprValues = [1, 1.25, 1.33, 1.5, 1.75, 2, 2.5, 3]
-    const viewportHeights = [400, 720, 753, 800, 801, 823, 1080]
+    // 813.6 and 720.4 are fractional on purpose: `measurePage` reads the visual
+    // viewport, which is not rounded to an integer, and 813.6 is the measured
+    // real value behind the defect this grid exists to catch (Chrome reported
+    // `innerHeight` 814 for it, and that rounding is what left unpainted rows
+    // at dpr 1.25). A planner that is only sound for integer viewports would
+    // pass this sweep and still ship holes.
+    const viewportHeights = [400, 720, 720.4, 753, 800, 801, 813.6, 823, 1080]
 
     const failures: string[] = []
     let checked = 0
@@ -281,7 +287,7 @@ describe('computeFramePlacements', () => {
       }
     }
 
-    expect(checked).toBe(108_304)
+    expect(checked).toBe(139_248)
     expect(
       failures,
       `${failures.length} failing combination(s):\n${failures.slice(0, 20).join('\n')}`,
@@ -309,7 +315,9 @@ describe('computeFramePlacements', () => {
   // coverage.
   it('property: interior seam drift stays within its measured bound on very long pages', () => {
     const dprValues = [1, 1.25, 1.33, 1.5, 1.75, 2, 2.5, 3]
-    const viewportHeights = [400, 720, 753, 800, 801, 823, 1080]
+    // Fractional entries for the same reason as the coverage sweep above: the
+    // viewport the content script measures is not an integer.
+    const viewportHeights = [400, 720, 720.4, 753, 800, 801, 813.6, 823, 1080]
 
     let maxDrift = 0
     let worst = 'none'
@@ -346,12 +354,21 @@ describe('computeFramePlacements', () => {
       }
     }
 
-    expect(checked).toBe(478_408)
-    // 31 device px (~23 CSS px at dpr 1.33) is what this grid actually produces, at
-    // dpr 1.33 / viewportHeight 753 / ~48,200 CSS px, frame 63. It is stable: sweeping the
-    // same grid at scrollHeight steps of 7, 13, 31, 61 and 101 all report exactly 31. It is
-    // also near the structural ceiling — drift is bounded by
+    expect(checked).toBe(615_096)
+    // 35 device px (28 CSS px at dpr 1.25) is what this grid actually produces, at
+    // dpr 1.25 / viewportHeight 720.4 / ~51,150 CSS px, frame 70 of 72. It is stable:
+    // sweeping the same grid at scrollHeight steps of 7, 13, 31, 61 and 101 all report
+    // exactly 35. It is also near the structural ceiling — drift is bounded by
     // (canvas row limit / frameHeight) x the sub-pixel residue, which is under 0.5 per step.
-    expect(maxDrift, `worst interior drift ${maxDrift} device px at ${worst}`).toBeLessThanOrEqual(31)
+    //
+    // The bound was 31 while this sweep only fed the planner integer viewport heights.
+    // Real measurements are fractional (`measurePage` reads `visualViewport`), and a
+    // fractional viewport can sit almost exactly half a device pixel away from its
+    // rounded frame height — round(720.4 x 1.25) = 901 against a true 900.5 — which is
+    // the worst possible residue, sustained over every one of the 72 frames. The extra
+    // 4 px is that difference, not a regression: the coverage property above still holds
+    // with zero uncovered rows for exactly the same inputs, and holes, not drift, are
+    // what this design trades against.
+    expect(maxDrift, `worst interior drift ${maxDrift} device px at ${worst}`).toBeLessThanOrEqual(35)
   }, 30_000)
 })

@@ -4,6 +4,10 @@ import { SETTLE_DELAY_MS, measurePage, scrollToStep } from '../../src/content/sc
 const FRAME_DELAY_MS = 16
 
 describe('measurePage', () => {
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'visualViewport')
+  })
+
   it('reads dimensions from the document and window', () => {
     document.body.innerHTML = '<div style="height: 3000px"></div>'
     Object.defineProperty(document.documentElement, 'scrollHeight', {
@@ -12,9 +16,35 @@ describe('measurePage', () => {
     })
     const m = measurePage(window)
     expect(m.scrollHeight).toBe(3000)
+    expect(m.devicePixelRatio).toBe(window.devicePixelRatio)
+  })
+
+  // The fractional-DPI defect in one assertion. Chrome rounds `innerHeight` to
+  // 814 where the viewport is really 813.6 CSS px, and at devicePixelRatio 1.25
+  // that rounding sizes every frame one device pixel taller than the surface
+  // `captureVisibleTab` actually returns -- which ships transparent rows,
+  // including along the image's bottom edge. The true value is the one to plan
+  // against.
+  it('prefers the fractional visual viewport over the rounded window size', () => {
+    Object.defineProperty(window, 'visualViewport', {
+      configurable: true,
+      value: { width: 1279.2, height: 813.5999755859375 },
+    })
+    const m = measurePage(window)
+    expect(m.viewportHeight).toBe(813.5999755859375)
+    expect(m.viewportWidth).toBe(1279.2)
+    expect(Math.round(m.viewportHeight * 1.25)).toBe(1017)
+    expect(Math.round(window.innerHeight * 1.25)).not.toBe(1017)
+  })
+
+  // Not every context has a visual viewport, and where it is missing the
+  // rounded window size is both the fallback and what Chrome would have
+  // reported anyway.
+  it('falls back to the window size where there is no visual viewport', () => {
+    expect(window.visualViewport).toBeUndefined()
+    const m = measurePage(window)
     expect(m.viewportWidth).toBe(window.innerWidth)
     expect(m.viewportHeight).toBe(window.innerHeight)
-    expect(m.devicePixelRatio).toBe(window.devicePixelRatio)
   })
 })
 
