@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { runCapture } from '../../src/background/capture-loop'
+import {
+  CAPTURE_QUOTA_MAX_ATTEMPTS,
+  quotaBackoffMs,
+  runCapture,
+} from '../../src/background/capture-loop'
 import type { CaptureDeps } from '../../src/background/capture-loop'
 import type { ContentRequest, OffscreenRequest } from '../../src/shared/messages'
 import type { PageMeasurements } from '../../src/core/types'
@@ -17,7 +21,7 @@ const measurements: PageMeasurements = {
   scrollY: 0,
 }
 
-function makeDeps(overrides: Partial<CaptureDeps> = {}) {
+function makeDeps(overrides: Partial<CaptureDeps> = {}, page: PageMeasurements = measurements) {
   const contentCalls: ContentRequest[] = []
   const offscreenCalls: string[] = []
   // A single ordered log across ALL three channels. Per-channel logs cannot
@@ -31,7 +35,7 @@ function makeDeps(overrides: Partial<CaptureDeps> = {}) {
       contentCalls.push(request)
       events.push(`content:${request.type}`)
       return request.type === 'measure'
-        ? { ok: true as const, measurements }
+        ? { ok: true as const, measurements: page }
         : { ok: true as const }
     }),
     sendToOffscreen: vi.fn(async (request: OffscreenRequest) => {
@@ -134,7 +138,134 @@ describe('runCapture', () => {
   // lifetime -- so the image has to come back out for the caller to use.
   it('returns the stitched image from finishCapture', async () => {
     const { deps } = makeDeps()
-    await expect(runCapture(1, deps)).resolves.toEqual({ dataUrl: STITCHED })
+    await expect(runCapture(1, deps)).resolves.toEqual({
+      dataUrl: STITCHED,
+      truncated: false,
+      canvasWidth: 1000,
+      canvasHeight: 2000,
+    })
+  })
+
+  // `truncated` was set by the planner and read by nobody, so a page clamped to
+  // Chrome's canvas ceilings was delivered cropped under a plain ✓. The plan is
+  // built and thrown away inside runCapture, so this is the only place that can
+  // carry the fact out to the caller that owns the badge.
+  it('reports a plan the canvas limits truncated', async () => {
+    const { deps } = makeDeps({}, { ...measurements, scrollHeight: 400_000 })
+    const outcome = await runCapture(1, deps)
+    expect(outcome.truncated).toBe(true)
+    // Clamped to Chrome's 65,535-device-px maximum canvas dimension.
+    expect(outcome.canvasHeight).toBe(65_535)
+  })
+
+  describe('the capture quota', () => {
+    /** What Chrome actually rejects with when the per-second budget is spent. */
+    const quotaError = new Error(
+      'MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota exceeded.',
+    )
+
+    /**
+     * A one-frame page, so `captureVisibleTab` call counts read as attempts on
+     * a single frame rather than attempts times frames.
+     */
+    const oneFrame: PageMeasurements = { ...measurements, scrollHeight: 800 }
+
+    it('retries the quota rejection and delivers the capture', async () => {
+      let calls = 0
+      const { deps, contentCalls } = makeDeps(
+        {
+          captureVisibleTab: vi.fn(async () => {
+            calls += 1
+            if (calls <= 2) throw quotaError
+            return 'data:image/png;base64,AAAA'
+          }),
+        },
+        oneFrame,
+      )
+
+      // Two rejections then success, inside one frame's attempt budget: the
+      // capture is delivered rather than aborted, which is the whole point.
+      await expect(runCapture(1, deps)).resolves.toMatchObject({ dataUrl: STITCHED })
+      expect(calls).toBe(3)
+      expect(contentCalls.at(-1)?.type).toBe('restore')
+    })
+
+    it('backs off between attempts', async () => {
+      let calls = 0
+      const { deps } = makeDeps(
+        {
+          captureVisibleTab: vi.fn(async () => {
+            calls += 1
+            if (calls <= 2) throw quotaError
+            return 'data:image/png;base64,AAAA'
+          }),
+        },
+        oneFrame,
+      )
+      await runCapture(1, deps)
+
+      const waits = (deps.delay as unknown as { mock: { calls: number[][] } }).mock.calls.map(
+        (args) => args[0],
+      )
+      expect(waits.slice(0, 2)).toEqual([quotaBackoffMs(1), quotaBackoffMs(2)])
+    })
+
+    it('gives up after the attempt budget and restores the page', async () => {
+      const { deps, contentCalls, offscreenCalls } = makeDeps(
+        {
+          captureVisibleTab: vi.fn(async () => {
+            throw quotaError
+          }),
+        },
+        oneFrame,
+      )
+
+      await expect(runCapture(1, deps)).rejects.toThrow(/MAX_CAPTURE_VISIBLE_TAB/)
+      expect(deps.captureVisibleTab).toHaveBeenCalledTimes(CAPTURE_QUOTA_MAX_ATTEMPTS)
+      expect(offscreenCalls).toContain('abortCapture')
+      expect(contentCalls.at(-1)?.type).toBe('restore')
+    })
+
+    it('does not retry an error that is not the quota', async () => {
+      const { deps, contentCalls, offscreenCalls } = makeDeps(
+        {
+          captureVisibleTab: vi.fn(async () => {
+            throw new Error('No tab with id 7.')
+          }),
+        },
+        oneFrame,
+      )
+
+      await expect(runCapture(1, deps)).rejects.toThrow('No tab with id 7.')
+      expect(deps.captureVisibleTab).toHaveBeenCalledTimes(1)
+      expect(offscreenCalls).toContain('abortCapture')
+      expect(contentCalls.at(-1)?.type).toBe('restore')
+    })
+
+    // A retry sleeps for up to 2.2 s. Checking the tab once per frame would let
+    // the user switch tabs inside that window and get someone else's page
+    // spliced into their screenshot -- the exact bug the check exists to stop.
+    it('re-checks the active tab before every attempt', async () => {
+      let captures = 0
+      let checks = 0
+      const { deps } = makeDeps(
+        {
+          captureVisibleTab: vi.fn(async () => {
+            captures += 1
+            throw quotaError
+          }),
+          isTabStillActive: vi.fn(async () => {
+            checks += 1
+            // Still active for the first attempt, gone by the retry.
+            return checks < 2
+          }),
+        },
+        oneFrame,
+      )
+
+      await expect(runCapture(1, deps)).rejects.toThrow(/no longer active/i)
+      expect(captures).toBe(1)
+    })
   })
 
   it('asks the offscreen document to finish without any sink options', async () => {

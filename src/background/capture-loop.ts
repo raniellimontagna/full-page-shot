@@ -10,6 +10,73 @@ import type {
 /** captureVisibleTab is quota-limited; this spacing keeps the loop under it. */
 export const CAPTURE_INTERVAL_MS = 550
 
+/**
+ * How many times a single frame is attempted before the capture gives up.
+ *
+ * The fixed `CAPTURE_INTERVAL_MS` spacing keeps the loop under
+ * `MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND` on paper, but it is open-loop: it
+ * assumes this extension is the only caller and that the service worker is
+ * scheduled promptly. Neither is guaranteed -- another extension capturing the
+ * same window, or a throttled worker firing two calls back to back after a
+ * stall, spends quota this loop never counted -- and a single rejection used
+ * to abort the whole capture after the user had already waited through most
+ * of the page.
+ */
+export const CAPTURE_QUOTA_MAX_ATTEMPTS = 3
+
+/**
+ * Backoff before retry `n` (1-based): 550, 1100, 2200 ms.
+ *
+ * The quota is a per-second budget, so the first retry only has to outlast the
+ * current second; doubling from the throttle interval gives the budget room to
+ * refill when the contention is heavier than that. With
+ * `CAPTURE_QUOTA_MAX_ATTEMPTS` at 3 a frame waits at most 550 + 1100 ms.
+ */
+export function quotaBackoffMs(retry: number): number {
+  return CAPTURE_INTERVAL_MS * 2 ** (retry - 1)
+}
+
+/**
+ * Only the quota rejection is retried.
+ *
+ * Chrome reports it as an error mentioning `MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND`.
+ * Everything else -- the tab was closed, the page is a restricted URL, the
+ * window went away -- is permanent for this capture, and retrying it would
+ * only hold the page hostage (scrolled, header hidden) for seconds longer
+ * before failing anyway.
+ */
+export function isQuotaError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND|per second/i.test(message)
+}
+
+/**
+ * One frame, with a bounded retry on the capture quota.
+ *
+ * The active-tab check runs before *every* attempt, not once per frame: a
+ * retry sleeps for up to 2.2 s and the user can switch tabs inside that
+ * window, and capturing after they did would splice someone else's page into
+ * the screenshot -- the exact bug the check exists to prevent.
+ */
+async function captureFrame(deps: CaptureDeps): Promise<string> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= CAPTURE_QUOTA_MAX_ATTEMPTS; attempt += 1) {
+    // captureVisibleTab grabs whatever is on screen. If the user switched
+    // tabs, the next frame would be someone else's page -- stop instead.
+    if (!(await deps.isTabStillActive())) {
+      throw new Error('tab is no longer active')
+    }
+    try {
+      return await deps.captureVisibleTab()
+    } catch (error) {
+      if (!isQuotaError(error)) throw error
+      lastError = error
+      if (attempt < CAPTURE_QUOTA_MAX_ATTEMPTS) await deps.delay(quotaBackoffMs(attempt))
+    }
+  }
+  throw lastError
+}
+
 export interface CaptureDeps {
   sendToContent: (tabId: number, request: ContentRequest) => Promise<ContentResponse>
   sendToOffscreen: (request: OffscreenRequest) => Promise<OffscreenResponse>
@@ -33,6 +100,21 @@ export interface CaptureOutcome {
    * it is gone.
    */
   dataUrl: string
+  /**
+   * Whether `planCapture` had to clamp the page to Chrome's canvas ceilings,
+   * i.e. the delivered image is a correct capture of the *top* of the page and
+   * not of all of it.
+   *
+   * Carried out of here because it is the only place that knows: the plan is
+   * built and consumed inside this function, and the flag died with it --
+   * `page-metrics` set `truncated`, nothing ever read it, and a silently
+   * cropped capture was delivered under a plain ✓. The caller is what owns the
+   * badge, so the caller is what has to be told.
+   */
+  truncated: boolean
+  /** The clamped canvas size, in device pixels, for the truncation warning. */
+  canvasWidth: number
+  canvasHeight: number
 }
 
 function unwrap(response: ContentResponse | OffscreenResponse): void {
@@ -84,13 +166,7 @@ export async function runCapture(tabId: number, deps: CaptureDeps): Promise<Capt
 
       if (i > 0) await deps.delay(CAPTURE_INTERVAL_MS)
 
-      // captureVisibleTab grabs whatever is on screen. If the user switched
-      // tabs, the next frame would be someone else's page — stop instead.
-      if (!(await deps.isTabStillActive())) {
-        throw new Error('tab is no longer active')
-      }
-
-      const dataUrl = await deps.captureVisibleTab()
+      const dataUrl = await captureFrame(deps)
 
       // One frame at a time, straight through to the offscreen canvas: the
       // service worker never holds an array of data URLs, because MV3 can
@@ -110,7 +186,12 @@ export async function runCapture(tabId: number, deps: CaptureDeps): Promise<Capt
     if (!finished.dataUrl) throw new Error('the offscreen document returned no image')
     began = false
 
-    return { dataUrl: finished.dataUrl }
+    return {
+      dataUrl: finished.dataUrl,
+      truncated: plan.truncated,
+      canvasWidth: plan.canvasWidth,
+      canvasHeight: plan.canvasHeight,
+    }
   } catch (error) {
     if (began) await deps.sendToOffscreen({ type: 'abortCapture' }).catch(() => {})
     throw error
