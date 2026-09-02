@@ -47,6 +47,19 @@ export default defineManifest({
     ...(isE2eBuild ? (['tabs'] as const) : []),
   ],
   ...e2eOnly,
+  // `_execute_action` is Chrome's reserved command: it fires
+  // `chrome.action.onClicked`, the exact listener a toolbar click fires, so the
+  // shortcut needs no listener of its own and cannot drift from the click path.
+  // Ctrl+Shift+Y / Cmd+Shift+Y is unassigned in stock Chrome; a user who
+  // disagrees can rebind it at chrome://extensions/shortcuts, which is also
+  // where the shortcut lands if another extension claimed the combination
+  // first (Chrome silently leaves it unbound rather than stealing it).
+  commands: {
+    _execute_action: {
+      suggested_key: { default: 'Ctrl+Shift+Y', mac: 'Command+Shift+Y' },
+      description: 'Capture full page',
+    },
+  },
   options_page: 'src/options/options.html',
   action: {
     default_title: 'Capture full page',
