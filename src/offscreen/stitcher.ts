@@ -1,4 +1,5 @@
 import { planEncode } from '../shared/formats'
+import type { DeviceRect } from '../shared/crop'
 import type { DownloadFormat, Scale } from '../shared/prefs'
 
 export interface ExportOptions {
@@ -55,6 +56,27 @@ export class Stitcher {
   }
 
   /**
+   * Draws only `crop`'s source rect (already device px, already clamped to
+   * the frame -- see `planCrop`) from a decoded frame, at the canvas
+   * origin. The canvas is expected to already be sized to `crop.width` x
+   * `crop.height` (selection mode's whole point: the exported image is just
+   * the selected region, not the full frame with the rest discarded).
+   */
+  drawBitmapCropped(bitmap: ImageBitmap, crop: DeviceRect): void {
+    this.context.drawImage(
+      bitmap,
+      crop.x,
+      crop.y,
+      crop.width,
+      crop.height,
+      0,
+      0,
+      crop.width,
+      crop.height,
+    )
+  }
+
+  /**
    * Encodes the stitched canvas at the requested scale and format.
    *
    * Read-only with respect to the stitched canvas: downscaling draws onto a
@@ -93,15 +115,39 @@ export class Stitcher {
 }
 
 /**
+ * Decodes a captured frame's data URL into a bitmap.
+ *
+ * Split out from `stitcherFromFrame` so `encodeSingleFrame`'s crop path
+ * (`src/offscreen/index.ts`) can decode once, read the bitmap's real
+ * dimensions to plan the crop (`planCrop` needs the frame size), and draw
+ * from that same bitmap -- instead of decoding again through
+ * `stitcherFromFrame`, which does not have a way to report the dimensions
+ * of a frame it hasn't been asked to draw yet.
+ */
+export async function decodeFrame(dataUrl: string): Promise<ImageBitmap> {
+  return createImageBitmap(await (await fetch(dataUrl)).blob())
+}
+
+/**
  * Builds a Stitcher holding a single already-captured frame.
  *
  * Viewport mode has no plan, no scroll loop and no `beginCapture`: one
  * `captureVisibleTab` is the whole image. It still goes through the same
  * export path so scale and format behave identically in both modes.
+ *
+ * `crop`, when given, is already a device-pixel rect (see `planCrop`) --
+ * this function does not plan one itself, it only draws it. The canvas is
+ * sized to the crop instead of the full frame, so the exported image is just
+ * the selected region.
  */
-export async function stitcherFromFrame(dataUrl: string): Promise<Stitcher> {
-  const bitmap = await createImageBitmap(await (await fetch(dataUrl)).blob())
+export async function stitcherFromFrame(dataUrl: string, crop?: DeviceRect): Promise<Stitcher> {
+  const bitmap = await decodeFrame(dataUrl)
   try {
+    if (crop) {
+      const stitcher = new Stitcher(crop.width, crop.height)
+      stitcher.drawBitmapCropped(bitmap, crop)
+      return stitcher
+    }
     const stitcher = new Stitcher(bitmap.width, bitmap.height)
     stitcher.drawBitmap(bitmap)
     return stitcher

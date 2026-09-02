@@ -1,5 +1,6 @@
+import { planCrop } from '../shared/crop'
 import type { ExportRequestFields, OffscreenRequest, OffscreenResponse } from '../shared/messages'
-import { Stitcher, stitcherFromFrame, type ExportOptions } from './stitcher'
+import { Stitcher, decodeFrame, stitcherFromFrame, type ExportOptions } from './stitcher'
 
 /**
  * The only part of `Stitcher` `exportBoth` actually needs.
@@ -84,7 +85,27 @@ async function handle(request: OffscreenRequest): Promise<OffscreenResponse> {
     case 'encodeSingleFrame': {
       // No `stitcher` state is touched: viewport mode never begins a capture,
       // and a full-page capture must not be disturbed if one is somehow live.
-      return await exportBoth(await stitcherFromFrame(request.dataUrl), request)
+      if (!request.crop) return await exportBoth(await stitcherFromFrame(request.dataUrl), request)
+
+      // Selection mode: `request.crop` is CSS px and converting it needs the
+      // captured frame's real device-pixel dimensions (`planCrop`'s `frame`
+      // argument) -- which are only known once the frame is decoded. Decode
+      // here, once, so the same bitmap serves both the size lookup below and
+      // the crop draw; `stitcherFromFrame` decodes independently and has no
+      // way to hand dimensions back before drawing, which is why this path
+      // does not go through it.
+      const bitmap = await decodeFrame(request.dataUrl)
+      try {
+        const crop = planCrop(request.crop, request.devicePixelRatio, {
+          width: bitmap.width,
+          height: bitmap.height,
+        })
+        const cropped = new Stitcher(crop.width, crop.height)
+        cropped.drawBitmapCropped(bitmap, crop)
+        return await exportBoth(cropped, request)
+      } finally {
+        bitmap.close()
+      }
     }
     case 'abortCapture':
       stitcher = null
