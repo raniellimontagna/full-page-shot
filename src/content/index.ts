@@ -23,6 +23,22 @@ export const RESTORE_WATCHDOG_MS = 10_000
 let originalScrollY: number | null = null
 let watchdog: ReturnType<typeof setTimeout> | null = null
 
+/**
+ * Bumped once per `selectArea` call, so each session's `finally` can tell
+ * whether it is still the current one.
+ *
+ * `selectArea` #2 cancels #1 synchronously (via `removeSelectionOverlay`),
+ * but #1's `await selectArea(...)` only resolves two frames later, well after
+ * #2 has already armed its own watchdog. Without this token, #1's
+ * `finally { clearWatchdog() }` runs unconditionally and kills whatever timer
+ * is *currently* armed — which by then protects the live overlay #2, not the
+ * cancelled #1. A worker eviction in that window would strand overlay #2 with
+ * no watchdog at all. Comparing generations makes a superseded session's
+ * `finally` a no-op, leaving the current session's own `clearWatchdog()` (its
+ * own `finally`, or a later `restore`) as the only thing that can disarm it.
+ */
+let selectionGen = 0
+
 function restorePage(): void {
   // The selection overlay is page state exactly like a hidden header is: if
   // the service worker dies while it is up, nothing else is left alive to take
@@ -107,12 +123,16 @@ async function handle(request: ContentRequest): Promise<ContentResponse> {
   // A cancel is not a failure -- `{ ok: true, rect: null }`, and the service
   // worker delivers nothing and shows a neutral badge.
   if (request.type === 'selectArea') {
+    const gen = ++selectionGen
     armWatchdog()
     try {
       const rect = await selectArea(document, { onActivity: armWatchdog })
       return { ok: true, rect }
     } finally {
-      clearWatchdog()
+      // Only disarm if no later selectArea has superseded this one — see
+      // `selectionGen` above. A superseded session must leave the current
+      // session's watchdog alone.
+      if (gen === selectionGen) clearWatchdog()
     }
   }
 

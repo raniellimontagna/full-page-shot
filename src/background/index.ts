@@ -311,9 +311,12 @@ async function runOneCapture(
     await closeOffscreen()
 
     // Both sinks run, independently, whatever either one does -- and the badge
-    // says which of those two things happened. The full path has already sent
-    // `restore`, and the viewport path never altered the page at all, so the
-    // page is exactly as the user left it before a single byte is delivered.
+    // says which of those two things happened. All three modes reach this
+    // point with the page already exactly as the user left it: the full path
+    // has already sent `restore`, the viewport path never altered the page at
+    // all, and the selection path's overlay came down -- painted away, per
+    // `selectArea`'s two-frame wait -- before its content script even replied.
+    // So the page is untouched before a single byte is delivered.
     const delivery = await deliverImages(
       prefs,
       images,

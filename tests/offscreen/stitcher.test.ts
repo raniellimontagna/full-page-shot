@@ -120,21 +120,12 @@ describe('stitcherFromFrame', () => {
   })
 })
 
-describe('decodeFrame', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals()
-  })
-
-  it('fetches the data URL and decodes it into a bitmap', async () => {
-    const bitmap = new FakeBitmap(50, 60)
-    stubCanvasEnv(bitmap)
-
-    const { decodeFrame } = await import('../../src/offscreen/stitcher')
-    const result = await decodeFrame('data:image/png;base64,x')
-
-    expect(result).toBe(bitmap)
-  })
-})
+// `decodeFrame` is private to `src/offscreen/stitcher.ts` -- it has no
+// caller outside `stitcherFromFrame`, so it is exercised only through that
+// function's tests above rather than imported directly. Those already prove
+// the fetch-then-`createImageBitmap` decode: `stitcher.size` reflects the
+// bitmap's real dimensions and `bitmap.closed` is true once the stitcher
+// resolves, which is only possible if `decodeFrame` actually decoded it.
 
 describe('Stitcher.drawBitmapCropped', () => {
   beforeEach(() => {

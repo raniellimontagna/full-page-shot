@@ -380,4 +380,36 @@ describe('content script area selection', () => {
 
     expect(scrollTo).not.toHaveBeenCalled()
   })
+
+  // Regression: a second `selectArea` cancels the first synchronously (via
+  // `removeSelectionOverlay`), but session #1's promise only settles two
+  // frames later. Its `handle` call's `finally { clearWatchdog() }` used to
+  // run unconditionally — killing whatever timer was *currently* armed, which
+  // by then was the second, live overlay's watchdog, not its own. A worker
+  // eviction in that window would strand the second overlay with no watchdog
+  // at all, violating the one absolute rule (a failed/cancelled capture never
+  // leaves the page altered). A generation token now makes a session's
+  // `finally` a no-op once a later selectArea has superseded it.
+  it('keeps the watchdog protecting the second overlay after it supersedes and cancels the first', async () => {
+    vi.useFakeTimers()
+    const { listener, watchdogMs } = await loadContentScript()
+
+    const first = send(listener, { type: 'selectArea' })
+    const second = send(listener, { type: 'selectArea' })
+
+    // Session #1 was cancelled synchronously the instant session #2 mounted.
+    // Let its `await selection` and cleanup (including the two `nextFrame`s)
+    // actually settle before asserting anything about the timers.
+    await vi.advanceTimersByTimeAsync(500)
+    expect(await first).toEqual({ ok: true, rect: null })
+    expect(document.querySelectorAll(OVERLAY_TAG)).toHaveLength(1)
+
+    // Total silence on the surviving overlay — exactly what an evicted worker
+    // would also produce. The watchdog protecting it must still be armed.
+    await vi.advanceTimersByTimeAsync(watchdogMs + 1_000)
+
+    expect(document.querySelector(OVERLAY_TAG)).toBeNull()
+    await vi.advanceTimersByTimeAsync(500)
+    expect(await second).toEqual({ ok: true, rect: null })
+  })
 })

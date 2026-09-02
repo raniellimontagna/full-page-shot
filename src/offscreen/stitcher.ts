@@ -118,14 +118,16 @@ export class Stitcher {
 /**
  * Decodes a captured frame's data URL into a bitmap.
  *
- * Split out from `stitcherFromFrame` so `encodeSingleFrame`'s crop path
- * (`src/offscreen/index.ts`) can decode once, read the bitmap's real
- * dimensions to plan the crop (`planCrop` needs the frame size), and draw
- * from that same bitmap -- instead of decoding again through
- * `stitcherFromFrame`, which does not have a way to report the dimensions
- * of a frame it hasn't been asked to draw yet.
+ * Split out from `stitcherFromFrame` (its only caller, below, in this same
+ * file) so the crop path can decode once, read the bitmap's real dimensions
+ * to plan the crop (`planCrop` needs the frame size), and draw from that same
+ * bitmap -- instead of decoding again through `stitcherFromFrame`, which does
+ * not have a way to report the dimensions of a frame it hasn't been asked to
+ * draw yet. Not exported: `src/offscreen/index.ts` and everything else goes
+ * through `stitcherFromFrame`, which is the one production path from a data
+ * URL to a (possibly cropped) `Stitcher`.
  */
-export async function decodeFrame(dataUrl: string): Promise<ImageBitmap> {
+async function decodeFrame(dataUrl: string): Promise<ImageBitmap> {
   return createImageBitmap(await (await fetch(dataUrl)).blob())
 }
 

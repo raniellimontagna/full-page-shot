@@ -271,14 +271,18 @@ export async function selectArea(
   // page registered and can stop the event reaching it. (Move and up are on
   // the document rather than the host for a second reason: jsdom has no
   // `setPointerCapture`, and without capture a drag that slips past the host
-  // still has to be followed.)
+  // still has to be followed.) `wheel` was on the host until it was noticed
+  // that made it the odd one out: a page's own capture-phase `wheel` listener
+  // on `window`/`document` would run first and could scroll the page before
+  // this ever saw the event. On `document` it runs in the same phase, at the
+  // same target, as the other four.
   doc.addEventListener('pointerdown', onPointerDown, true)
   doc.addEventListener('pointermove', onPointerMove, true)
   doc.addEventListener('pointerup', onPointerUp, true)
   doc.addEventListener('keydown', onKeyDown, true)
   // `passive: false` is required: a passive listener may not `preventDefault`,
   // and wheel listeners default to passive on document-level targets.
-  parts.host.addEventListener('wheel', onWheel, { capture: true, passive: false })
+  doc.addEventListener('wheel', onWheel, { capture: true, passive: false })
 
   const session = { cancel: (): void => settle(null) }
   active = session
@@ -291,7 +295,7 @@ export async function selectArea(
     doc.removeEventListener('pointermove', onPointerMove, true)
     doc.removeEventListener('pointerup', onPointerUp, true)
     doc.removeEventListener('keydown', onKeyDown, true)
-    parts.host.removeEventListener('wheel', onWheel, { capture: true })
+    doc.removeEventListener('wheel', onWheel, { capture: true })
     parts.host.remove()
     await nextFrame(win)
     await nextFrame(win)
