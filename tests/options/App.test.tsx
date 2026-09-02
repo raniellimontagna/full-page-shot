@@ -70,6 +70,29 @@ describe('options App', () => {
     })
   })
 
+  it('renders a stored "selection" capture mode', async () => {
+    render(
+      <App
+        load={async () => ({ ...BASE_PREFS, captureMode: 'selection' })}
+        save={vi.fn(async () => {})}
+      />,
+    )
+
+    expect(await screen.findByLabelText(/selected area/i)).toBeChecked()
+    expect(screen.getByLabelText(/full page/i)).not.toBeChecked()
+    expect(screen.getByLabelText(/visible area/i)).not.toBeChecked()
+  })
+
+  it('saves the full prefs object when capture mode changes to "selection"', async () => {
+    const save = vi.fn(async () => {})
+    render(<App load={async () => BASE_PREFS} save={save} />)
+
+    await userEvent.click(await screen.findByLabelText(/selected area/i))
+    await waitFor(() => {
+      expect(save).toHaveBeenCalledWith({ ...BASE_PREFS, captureMode: 'selection' })
+    })
+  })
+
   it('saves the full prefs object when scale changes', async () => {
     const save = vi.fn(async () => {})
     render(<App load={async () => BASE_PREFS} save={save} />)

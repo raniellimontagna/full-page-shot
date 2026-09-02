@@ -70,6 +70,16 @@ export function App({ load, save }: Props) {
           />
           Visible area
         </label>
+        <label>
+          <input
+            type="radio"
+            name="captureMode"
+            value="selection"
+            checked={prefs.captureMode === 'selection'}
+            onChange={() => update({ captureMode: 'selection' as CaptureMode })}
+          />
+          Selected area
+        </label>
       </fieldset>
 
       <fieldset>

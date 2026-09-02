@@ -84,6 +84,21 @@ describe('buildFilename', () => {
     })
     expect(name).toBe('full-page-shot/example.com-2026-09-01T14-05-09-viewport.jpg')
   })
+
+  // Same reasoning as the viewport suffix: without it a selection shot and a
+  // full-page (or viewport) shot of the same host in the same second are
+  // indistinguishable on disk.
+  it.each([
+    ['png', '.png'],
+    ['jpeg', '.jpg'],
+    ['webp', '.webp'],
+  ] as const)('marks a selection capture with a suffix before the %s extension', (format, extension) => {
+    const name = buildFilename(new Date('2026-09-01T14:05:09Z'), 'example.com', {
+      mode: 'selection',
+      format,
+    })
+    expect(name).toBe(`full-page-shot/example.com-2026-09-01T14-05-09-selection${extension}`)
+  })
 })
 
 describe('resolveCaptureMode', () => {
@@ -99,6 +114,9 @@ describe('resolveCaptureMode', () => {
     expect(resolveCaptureMode('full', { ...DEFAULT_PREFS, captureMode: 'viewport' })).toBe('full')
     expect(resolveCaptureMode('viewport', { ...DEFAULT_PREFS, captureMode: 'full' })).toBe(
       'viewport',
+    )
+    expect(resolveCaptureMode('selection', { ...DEFAULT_PREFS, captureMode: 'full' })).toBe(
+      'selection',
     )
   })
 })
@@ -143,5 +161,17 @@ describe('loadPrefs', () => {
       scale: 1,
       downloadFormat: 'png',
     })
+  })
+
+  it('lets a stored "selection" capture mode survive coercion', async () => {
+    mockStorage({ captureMode: 'selection' })
+    const prefs = await loadPrefs()
+    expect(prefs.captureMode).toBe('selection')
+  })
+
+  it('falls back a garbage capture mode to "full", not "selection"', async () => {
+    mockStorage({ captureMode: 'not-a-mode' })
+    const prefs = await loadPrefs()
+    expect(prefs.captureMode).toBe('full')
   })
 })

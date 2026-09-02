@@ -1,6 +1,6 @@
 import { extensionFor } from './formats'
 
-export type CaptureMode = 'full' | 'viewport'
+export type CaptureMode = 'full' | 'viewport' | 'selection'
 export type Scale = 1 | 2
 export type DownloadFormat = 'png' | 'jpeg' | 'webp'
 
@@ -59,16 +59,18 @@ export interface FilenameOptions {
  * authority contain — hence the two substitutions. The timestamp keeps ISO
  * field order so the files sort chronologically by name.
  *
- * The `-viewport` suffix is what tells the two modes apart on disk: without
- * it a viewport shot and a full-page shot of the same host in the same second
- * are indistinguishable by name, and Chrome would silently number one of them.
- * The extension follows the *download* format — the clipboard is always PNG,
- * but nothing about the clipboard reaches a filename.
+ * The `-viewport`/`-selection` suffix is what tells the three modes apart on
+ * disk: without it two shots of the same host in the same second in
+ * different modes are indistinguishable by name, and Chrome would silently
+ * number one of them. The extension follows the *download* format — the
+ * clipboard is always PNG, but nothing about the clipboard reaches a
+ * filename.
  */
 export function buildFilename(now: Date, hostname: string, options: FilenameOptions): string {
   const stamp = now.toISOString().slice(0, 19).replace(/:/g, '-')
   const safeHost = hostname.replace(/[^a-zA-Z0-9.-]/g, '-')
-  const suffix = options.mode === 'viewport' ? '-viewport' : ''
+  const suffix =
+    options.mode === 'viewport' ? '-viewport' : options.mode === 'selection' ? '-selection' : ''
   return `full-page-shot/${safeHost}-${stamp}${suffix}${extensionFor(options.format)}`
 }
 
@@ -86,7 +88,9 @@ export function resolveCaptureMode(explicit: CaptureMode | undefined, prefs: Pre
 }
 
 function coerceCaptureMode(value: unknown): CaptureMode {
-  return value === 'full' || value === 'viewport' ? value : DEFAULT_PREFS.captureMode
+  return value === 'full' || value === 'viewport' || value === 'selection'
+    ? value
+    : DEFAULT_PREFS.captureMode
 }
 
 function coerceScale(value: unknown): Scale {

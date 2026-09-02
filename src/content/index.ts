@@ -129,6 +129,11 @@ async function handle(request: ContentRequest): Promise<ContentResponse> {
     case 'scrollTo':
       await scrollToStep(window, request.y)
       return { ok: true }
+    case 'selectArea':
+      // TODO(Task 2): mount the selection overlay and resolve with its rect
+      // (or `null` on cancel). Placeholder only exists to keep this switch
+      // exhaustive over `ContentRequest` now that `selectArea` is a member.
+      return { ok: false, error: 'not implemented' }
   }
 }
 
