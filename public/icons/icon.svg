@@ -1,0 +1,23 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <!-- Full Page Shot mark: a tall page silhouette (the whole scrollable
+       page) with a camera-style capture frame over it (the act of shooting
+       it). Two flat colours, no text, legible from 128px down to 16px. -->
+
+  <!-- The page -->
+  <rect x="28" y="8" width="72" height="112" rx="12" fill="#2454E6" />
+
+  <!-- Folded corner, for a touch of depth without adding a new colour -->
+  <path d="M 76 8 H 88 A 12 12 0 0 1 100 20 V 32 Z" fill="#7B9CFF" />
+
+  <!-- Capture / viewfinder corner brackets -->
+  <g stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" fill="none">
+    <path d="M 42 22 H 58" />
+    <path d="M 42 22 V 38" />
+    <path d="M 86 22 H 70" />
+    <path d="M 86 22 V 38" />
+    <path d="M 42 106 H 58" />
+    <path d="M 42 106 V 90" />
+    <path d="M 86 106 H 70" />
+    <path d="M 86 106 V 90" />
+  </g>
+</svg>
