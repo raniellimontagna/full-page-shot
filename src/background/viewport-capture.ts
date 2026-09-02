@@ -24,6 +24,17 @@ export interface ViewportCaptureDeps {
    * `measure` reply. Asynchronous because reading it means asking the tab.
    */
   getDevicePixelRatio: () => Promise<number>
+  /**
+   * False once the user has switched tabs or windows.
+   *
+   * `captureVisibleTab` grabs whatever is on screen at the moment it runs, not
+   * whatever was on screen when the user asked. Without this the gesture and
+   * the capture can straddle a tab switch and Chrome hands back the *new*
+   * tab's pixels -- delivered under the original tab's filename, with a green
+   * badge. The full path has always guarded this; one frame is a smaller
+   * window for the race, not an absent one.
+   */
+  isTabStillActive: () => Promise<boolean>
 }
 
 export interface ViewportCaptureOutcome {
@@ -50,9 +61,23 @@ export async function runViewportCapture(
   deps: ViewportCaptureDeps,
   encode: EncodeOptions,
 ): Promise<ViewportCaptureOutcome> {
+  if (!(await deps.isTabStillActive())) {
+    throw new Error('tab is no longer active')
+  }
+
   const [dataUrl, devicePixelRatio] = await Promise.all([
     deps.captureVisibleTab(),
-    deps.getDevicePixelRatio(),
+    // Never fatal. A rejected ratio read (the tab navigated somewhere
+    // restricted, closed, or crashed between the gesture and the injection)
+    // must not throw away a frame that already exists on a page nothing
+    // altered -- and 1 means "no downscale", which is the safe reading.
+    deps.getDevicePixelRatio().catch((error: unknown) => {
+      console.warn(
+        '[full-page-shot] could not read the tab\'s devicePixelRatio, ' +
+          `assuming 1 (no downscale): ${error instanceof Error ? error.message : String(error)}`,
+      )
+      return 1
+    }),
   ])
 
   await deps.ensureOffscreen()

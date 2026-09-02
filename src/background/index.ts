@@ -188,13 +188,26 @@ export async function captureTab(tab: chrome.tabs.Tab, mode?: CaptureMode): Prom
  * unusable falls back to 1, which is the ratio of an ordinary display and the
  * value at which the 1x downscale is a no-op: a bad reading must never scale
  * the image by a garbage factor.
+ *
+ * "Unusable" includes the injection itself failing, which is why the throw is
+ * caught here rather than left to the caller. On the full path a failed
+ * injection is fatal and should be -- no measure means no plan. Here the frame
+ * has already been captured from a page nothing altered, so refusing to
+ * deliver it would trade a good screenshot for a red badge over a number whose
+ * safe default is known.
  */
 async function tabDevicePixelRatio(tabId: number): Promise<number> {
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: () => window.devicePixelRatio,
-  })
-  const value = results[0]?.result
+  let value: unknown
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => window.devicePixelRatio,
+    })
+    value = results[0]?.result
+  } catch (error) {
+    console.warn('[full-page-shot] could not inject the devicePixelRatio probe', error)
+    return 1
+  }
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 1
 }
 
@@ -223,13 +236,27 @@ async function runOneCapture(
 
     if (mode === 'viewport') {
       images = await runViewportCapture(
-        { captureVisibleTab, sendToOffscreen, ensureOffscreen, getDevicePixelRatio: () => tabDevicePixelRatio(tabId) },
+        {
+          captureVisibleTab,
+          sendToOffscreen,
+          ensureOffscreen,
+          getDevicePixelRatio: () => tabDevicePixelRatio(tabId),
+          // The same check the full path makes before every frame, and for the
+          // same reason: captureVisibleTab returns whatever is on screen now,
+          // not what was on screen when the user asked.
+          isTabStillActive: async () => (await chrome.tabs.get(tabId)).active,
+        },
         encode,
       )
     } else {
-      images = await runFullPageCapture(tabId, { captureVisibleTab, sendToOffscreen }, encode, (result) => {
-        truncated = result
-      })
+      images = await runFullPageCapture(
+        tabId,
+        { captureVisibleTab, sendToOffscreen },
+        encode,
+        (result) => {
+          truncated = result
+        },
+      )
     }
 
     // The images are self-contained data URLs and the canvas has done its job,
