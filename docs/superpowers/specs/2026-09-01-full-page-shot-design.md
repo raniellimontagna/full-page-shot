@@ -206,21 +206,47 @@ Só que o conteúdo da página avança pelo valor exato `viewportHeight × dpr`.
 diferença sub-pixel entre os dois se acumula descendo a página, e as emendas interiores
 ficam levemente deslocadas da posição real do conteúdo.
 
-A magnitude é pequena e cresce com o número de passos: no varrimento de 478.408 combinações
-o pior caso é de 31 pixels de device (≈ 23 px CSS) na emenda 63 de uma página de ~48.000 px
-a `dpr` 1.33. Em páginas de tamanho comum a deriva fica em poucos pixels. O último frame é
-exceção: ele é ancorado no rodapé do canvas (`canvasHeight − frameHeight`), então o fim da
-página sempre bate exato — a deriva nunca corta conteúdo no final da imagem.
+A magnitude cresce com o número de passos. No varrimento de 615.096 combinações — viewports
+de **400 a 1080 px CSS** de altura, `dpr` de 1 a 3, páginas de até 60.000 px CSS — o pior caso
+é de **35 pixels de device** (≈ 28 px CSS) na emenda 70 de 72, a `dpr` 1.25 e viewport de
+720,4 px. Esse número vale para *essa* faixa de viewport e só para ela; não é um teto
+estrutural. A relação real é
+
+```
+deriva ≲ 0,5 × número de passos
+```
+
+porque cada frame erra no máximo meio pixel de device (`round(vh × dpr)` contra `vh × dpr`) e
+o erro se acumula linearmente ao longo da grade. A consequência é que a deriva **piora
+conforme o viewport encolhe**, já que a mesma página passa a ser coberta por mais frames:
+varrendo a mesma grade de `dpr` e de alturas de página com viewport de 401 px CSS o pior caso
+vai a 53 px de device; com 250 px, a 104; com 150 px, a 174. Janelas de tamanho normal não
+chegam perto disso — viewports de 400 e de 800 px dão deriva zero em toda a varredura, porque
+`vh × dpr` cai em inteiro para todos os `dpr` varridos —, mas uma janela deliberadamente baixa
+numa página muito longa deriva mais do que os 35 px medidos aqui. O último frame é exceção:
+ele é ancorado no rodapé do canvas (`canvasHeight − frameHeight`), então o fim da página
+sempre bate exato — a deriva nunca corta conteúdo no final da imagem.
 
 A deriva é aceita porque a alternativa é pior. Sem a grade uniforme, arredondar cada posição
 de forma independente deixa **linhas de device inteiras sem cobertura** — buracos
 transparentes no meio da imagem, ou o rodapé da página cortado. Também não é um artefato da
 grade escolhida: uma variante que minimiza a deriva, mantendo a posição real sempre que isso
 não quebra a contiguidade, foi varrida em 24.472 combinações e produziu exatamente o mesmo
-máximo de 31 px. O resíduo é estrutural — eliminá-lo exigiria desenhar frames mais altos do
-que o bitmap realmente é. A escolha real é entre deriva e buracos, e buraco é pior. O limite
-está travado por teste de propriedade em `tests/core/stitch-plan.test.ts`, para que uma
-mudança futura que piore as emendas falhe alto em vez de degradar a imagem em silêncio.
+máximo daquela grade (31 px, medidos quando o varrimento ainda só usava viewports inteiros) —
+ou seja, não melhorou nada. Eliminar o resíduo exigiria desenhar frames mais altos do que o
+bitmap realmente é. A escolha real é entre deriva e buracos, e buraco é pior. O limite da
+faixa varrida está travado por teste de propriedade em `tests/core/stitch-plan.test.ts`, para
+que uma mudança futura que piore as emendas falhe alto em vez de degradar a imagem em
+silêncio.
+
+**Teto de ~48 MB no PNG final.** A imagem costurada atravessa dois saltos de mensagem como
+data URL em base64: `chrome.runtime.sendMessage` do offscreen document para o service worker,
+e `chrome.tabs.sendMessage` do service worker para o content script que escreve na área de
+transferência. Cada um desses canais tem um limite interno de 64 MiB por mensagem, e o base64
+acrescenta cerca de 33% ao tamanho do PNG — então um PNG acima de aproximadamente **48 MB**
+estoura o limite. O erro aparece no salto da mensagem, com mensagem clara e badge de falha, e
+não como arquivo corrompido: a captura falha por inteiro em vez de entregar meia imagem.
+Páginas extremamente longas ou em telas de DPI alto são o caso realista de se chegar lá.
 
 ## Fora de escopo na v1
 
@@ -231,6 +257,39 @@ mudança futura que piore as emendas falhe alto em vez de degradar a imagem em s
 - Formatos além de PNG.
 - Firefox e Edge.
 - Salvar direto em pasta do Obsidian vault.
+
+## Backlog pós-v1
+
+Itens levantados na revisão final da branch e **deliberadamente não implementados** antes do
+merge: nenhum deles é bug de comportamento, todos custam mais do que valem neste momento.
+
+- **Aviso de depreciação do Vite 8 no import sem extensão.** `vite.config.ts` importa
+  `./src/manifest.config` sem extensão; o Vite 8 já avisa que a resolução de extensão para
+  arquivos TypeScript vai sair. Trocar por `./src/manifest.config.ts` é de uma linha, mas
+  mexe no arquivo que configura o build inteiro — vale fazer junto do próximo bump de Vite,
+  com os cinco portões rodando.
+- **Teste unitário isolando o piso da altura.** `planCapture` tem um `Math.max(1, ...)` no
+  `maxHeightCss` que nenhum teste exercita sozinho: qualquer entrada que force esse piso
+  também estoura o clamp de largura, então os dois ramos sempre disparam juntos. Falta um
+  caso que ative só o piso da altura.
+- **`visibility: … !important` inline perde o `!important` no restore.** `fixed-elements.ts`
+  guarda e devolve o valor da propriedade inline, mas a flag de prioridade não vai junto: uma
+  página que declarava `style="visibility: visible !important"` volta do capture com a mesma
+  declaração sem o `!important`. É raro e cosmético, mas é uma alteração residual na página.
+- **Verificar se dá para largar o `clipboardWrite`.** A escrita na área de transferência
+  acontece no content script, num documento focado, que não precisa dessa permissão. A suíte
+  e2e **não** responde isso (o contexto do Playwright concede permissões de clipboard por
+  conta própria); só a verificação manual no Chrome real decide — ver a nota da permissão em
+  `docs/store/listing.md`.
+- **`store/screenshots/01-options-page.png` é ~95% espaço em branco.** A página de opções tem
+  dois checkboxes no canto superior esquerdo de uma imagem 1280×800. Funciona como prova de
+  que a tela existe, mas é um screenshot ruim de vitrine — reenquadrar ou compor antes de
+  submeter.
+
+Vale revisitar também o `web_accessible_resources` que o CRXJS gera para o content script: a
+entrada sai com `use_dynamic_url: false`, o que deixa qualquer página sondar a existência da
+extensão pelo id fixo. Não expõe dado do usuário, mas é uma superfície de fingerprinting que
+não precisa existir.
 
 ## Referências
 

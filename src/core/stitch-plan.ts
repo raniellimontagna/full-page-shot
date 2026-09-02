@@ -40,10 +40,13 @@ export interface FramePlacement {
  *
  * Accepted cost: the grid drifts from each frame's true device-pixel position. Frames are
  * an integer `round(vh * dpr)` tall while the page content advances by the exact
- * `vh * dpr`, so the sub-pixel residue accumulates down the page — up to 31 device px by
- * step 63 of a ~48,000 px page at dpr 1.33. This is structural, not an artefact of the
+ * `vh * dpr`, so the sub-pixel residue accumulates down the page: roughly
+ * `0.5 * stepCount` device px, which means it grows as the viewport gets shorter and the
+ * page needs more frames. Over the swept range (viewport 400-1080 CSS px, dpr 1 to 3) the
+ * worst case measured is 35 device px, at step 70 of a ~51,000 px page at dpr 1.25; a
+ * 250 px viewport on the same pages reaches 104. It is not an artefact of this particular
  * grid: a drift-minimising variant that keeps true positions wherever they do not break
- * contiguity was swept over 24,472 combinations and produced the *same* 31 px maximum.
+ * contiguity was swept over 24,472 combinations and produced the *same* maximum.
  * Removing it would mean drawing frames a fraction taller than the bitmap actually is.
  * The real choice is drift or holes, and holes are worse. The final frame is exempt — it
  * is anchored to the canvas bottom, so the page bottom is always exact. See

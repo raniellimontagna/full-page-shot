@@ -9,7 +9,8 @@ PNG download, or both.
 
 ## What it does
 
-Click the toolbar button and the extension:
+Click the toolbar button (or press Ctrl+Shift+Y, Cmd+Shift+Y on a Mac) and
+the extension:
 
 1. Scrolls the active tab in viewport-sized steps, capturing a screenshot at
    each stop.
@@ -61,8 +62,9 @@ pnpm dev
 
 ### Project layout
 
-- `src/background` — the MV3 service worker: capture loop orchestration and
-  the clipboard/download sinks.
+- `src/background` — the MV3 service worker: capture loop orchestration, the
+  download sink, and the dispatcher that runs both sinks (the clipboard write
+  itself lives in `src/content/clipboard.ts`, which runs in the captured tab).
 - `src/content` — the content script injected into the page being captured.
 - `src/offscreen` — the offscreen document that stitches frames on a canvas.
 - `src/core` — pure, environment-agnostic logic (frame planning, geometry).

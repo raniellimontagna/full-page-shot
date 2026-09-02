@@ -15,9 +15,14 @@ Full Page Shot captures the entire scrollable content of the current tab —
 not just what fits in the viewport — as a single PNG image, in one click.
 
 HOW IT WORKS
-Click the toolbar icon. The extension measures the page, scrolls through it
-in segments, captures each segment, and stitches them into one seamless
-image entirely inside your browser. No server, no upload, no account.
+Click the toolbar icon, or press Ctrl+Shift+Y (Cmd+Shift+Y on a Mac). The
+extension measures the page, scrolls through it in segments, captures each
+segment, and stitches them into one seamless image entirely inside your
+browser. No server, no upload, no account.
+
+The shortcut is a suggested default: if another extension already claimed
+that combination, Chrome leaves it unassigned and you can set your own at
+chrome://extensions/shortcuts.
 
 OUTPUT
 Choose what happens after each capture from the options page:
@@ -60,9 +65,9 @@ uploaded — see the comment above `isE2eBuild` in `src/manifest.config.ts`.)
 | --- | --- |
 | `activeTab` | Grants temporary access to the current tab only when the user clicks the extension's toolbar icon — the extension never has standing access to tab content, and requests no host permissions. |
 | `scripting` | Injects the script that measures the page and drives the scroll-and-capture loop into the active tab, using the temporary access `activeTab` just granted. |
-| `offscreen` | Manifest V3 service workers have no DOM and cannot decode images, draw to a canvas, or use `navigator.clipboard`. The offscreen document is where captured frames are stitched into the final PNG. |
+| `offscreen` | Manifest V3 service workers have no DOM: they cannot decode an image or draw to a canvas. The offscreen document is where the captured frames are stitched into the final PNG. |
 | `downloads` | Saves the resulting PNG to the user's Downloads folder, when the user has turned that output on in the options page. |
-| `clipboardWrite` | Declared to support copying the resulting PNG to the clipboard when the user has that output turned on. **Maintainer note:** the actual clipboard write happens via `navigator.clipboard.write()` in the content script injected into the captured tab (`src/content/clipboard.ts`), which does not require this extension permission — it runs in a focused page context. This permission should be verified by removal (build, run the full test suite, `pnpm test:e2e`) before final submission; if the extension still functions with it removed, drop it from `src/manifest.config.ts` rather than ship an unused permission. |
+| `clipboardWrite` | Declared to support copying the resulting PNG to the clipboard when the user has that output turned on. **Maintainer note:** the actual clipboard write happens via `navigator.clipboard.write()` in the content script injected into the captured tab (`src/content/clipboard.ts`), which may not need this extension permission at all — it runs in a focused page context. Whether it can be dropped is still open, and **the end-to-end suite cannot answer it**: `e2e/helpers/extension.ts` grants clipboard permissions to the Playwright browser context itself, so `pnpm test:e2e` passes with or without the manifest permission. Deciding it requires a manual check in real Chrome: remove the permission, `pnpm build`, load `dist/` unpacked, set the options page to clipboard-only, capture a page, and paste into a real application. Only if that paste works should the permission be dropped from `src/manifest.config.ts`. |
 | `storage` | Remembers the user's output preference (clipboard / download) between sessions via `chrome.storage.sync`. |
 
 ## Assets checklist

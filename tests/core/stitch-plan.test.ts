@@ -356,10 +356,18 @@ describe('computeFramePlacements', () => {
 
     expect(checked).toBe(615_096)
     // 35 device px (28 CSS px at dpr 1.25) is what this grid actually produces, at
-    // dpr 1.25 / viewportHeight 720.4 / ~51,150 CSS px, frame 70 of 72. It is stable:
-    // sweeping the same grid at scrollHeight steps of 7, 13, 31, 61 and 101 all report
-    // exactly 35. It is also near the structural ceiling — drift is bounded by
-    // (canvas row limit / frameHeight) x the sub-pixel residue, which is under 0.5 per step.
+    // dpr 1.25 / viewportHeight 720.4 / ~51,150 CSS px, frame 70 of 72. It is stable
+    // for this grid: sweeping the same grid at scrollHeight steps of 7, 13, 31, 61 and
+    // 101 all report exactly 35.
+    //
+    // 35 is NOT a structural ceiling, and nothing here should be read as one. Drift is
+    // bounded by roughly 0.5 x stepCount — each frame is off by at most half a device
+    // pixel (round(vh x dpr) against vh x dpr) and the residue accumulates linearly —
+    // so it scales with how many frames cover the page, i.e. it grows as the viewport
+    // gets shorter. The bound asserted here therefore belongs to the swept viewport
+    // range only: 400-1080 CSS px tall, dpr 1 to 3. Sweeping the same dprs and page
+    // heights at viewportHeight 401 gives 53 device px; at 250, 104; at 150, 174. A
+    // deliberately short window on a very long page will exceed 35, by design.
     //
     // The bound was 31 while this sweep only fed the planner integer viewport heights.
     // Real measurements are fractional (`measurePage` reads `visualViewport`), and a
@@ -369,6 +377,7 @@ describe('computeFramePlacements', () => {
     // 4 px is that difference, not a regression: the coverage property above still holds
     // with zero uncovered rows for exactly the same inputs, and holes, not drift, are
     // what this design trades against.
+    // Scoped to `viewportHeights` above; shorten that list and this number moves.
     expect(maxDrift, `worst interior drift ${maxDrift} device px at ${worst}`).toBeLessThanOrEqual(35)
   }, 30_000)
 })
