@@ -1,7 +1,8 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { App } from '../../src/options/App'
+import type { ShortcutRow } from '../../src/options/shortcuts'
 import type { Prefs } from '../../src/shared/prefs'
 
 const BASE_PREFS: Prefs = {
@@ -116,5 +117,55 @@ describe('options App', () => {
   it('notes that the clipboard always uses PNG', async () => {
     render(<App load={async () => BASE_PREFS} save={vi.fn(async () => {})} />)
     expect(await screen.findByText(/clipboard always uses PNG/i)).toBeInTheDocument()
+  })
+
+  it('names the delivery outputs without promising a PNG download', async () => {
+    render(<App load={async () => BASE_PREFS} save={vi.fn(async () => {})} />)
+    expect(await screen.findByRole('switch', { name: /save as a download/i })).toBeChecked()
+    expect(screen.getByRole('switch', { name: /copy to clipboard/i })).not.toBeChecked()
+  })
+
+  it('shows the extension version when one is given', async () => {
+    render(<App load={async () => BASE_PREFS} save={vi.fn(async () => {})} version="1.2.0" />)
+    expect(await screen.findByText('v1.2.0')).toBeInTheDocument()
+  })
+
+  it('lists the keyboard shortcuts Chrome actually assigned', async () => {
+    const rows: ShortcutRow[] = [
+      { id: '_execute_action', label: 'Capture with the default mode', keys: ['Ctrl', 'Shift', 'Y'] },
+      { id: 'capture-viewport', label: 'Capture visible area', keys: ['Ctrl', 'Shift', 'U'] },
+      { id: 'capture-selection', label: 'Capture selected area', keys: [] },
+    ]
+    render(
+      <App load={async () => BASE_PREFS} save={vi.fn(async () => {})} loadShortcuts={async () => rows} />,
+    )
+
+    const list = await screen.findByRole('list', { name: /keyboard shortcuts/i })
+    const items = await within(list).findAllByRole('listitem')
+    expect(items).toHaveLength(3)
+    expect(items[0]).toHaveTextContent(/default mode/i)
+    expect(within(items[0] as HTMLElement).getAllByText(/^(Ctrl|Shift|Y)$/)).toHaveLength(3)
+    expect(items[2]).toHaveTextContent(/not set/i)
+  })
+
+  it('opens Chrome\'s shortcut settings from the shortcuts section', async () => {
+    const openShortcutSettings = vi.fn()
+    render(
+      <App
+        load={async () => BASE_PREFS}
+        save={vi.fn(async () => {})}
+        loadShortcuts={async () => []}
+        openShortcutSettings={openShortcutSettings}
+      />,
+    )
+
+    await userEvent.click(await screen.findByRole('button', { name: /change shortcuts/i }))
+    expect(openShortcutSettings).toHaveBeenCalledOnce()
+  })
+
+  it('leaves the shortcuts section out when shortcuts cannot be read', async () => {
+    render(<App load={async () => BASE_PREFS} save={vi.fn(async () => {})} />)
+    await screen.findByLabelText(/clipboard/i)
+    expect(screen.queryByRole('list', { name: /keyboard shortcuts/i })).not.toBeInTheDocument()
   })
 })
