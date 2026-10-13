@@ -105,6 +105,9 @@ none of its own. The selection overlay is drawn by the same content script
 
 - Icons: `public/icons/icon{16,32,48,128}.png` — see `public/icons/icon.svg`
   for the source artwork.
-- Screenshots: `store/screenshots/*.png`, five images at 1280×800.
+- Screenshots: `store/screenshots/*.png`, five images at 1280×800, each of
+  real UI or real output: the options page (light), a page before capture,
+  the area-selection overlay mid-drag, the stitched result, and the options
+  page in dark mode.
 - Privacy policy: `docs/store/privacy-policy.md` (link this URL, once
   published, from the Chrome Web Store dashboard's privacy tab).
